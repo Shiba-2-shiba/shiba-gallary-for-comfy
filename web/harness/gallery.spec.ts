@@ -155,3 +155,54 @@ test("single view immediately reuses the grid preview while its original is stil
   await expect(page.locator(".sg-quality-status")).toHaveText("Original");
   await expect(page.locator(".sg-image-preview")).toHaveCount(0);
 });
+
+for (const index of [0, 1]) {
+  test(`single ${index ? "square" : "portrait"} image uses more space than the comparison pane without cropping`, async ({ page }) => {
+    await page.goto("/proxy/8188/");
+    await page.getByRole("button", { name: "Open Gallery", exact: true }).click();
+    await page.getByRole("button", { name: `View shiba_0000${index}.png`, exact: true }).click();
+    await expect(page.locator(".sg-quality-status")).toHaveText("Original");
+    await expect(page.locator(".sg-candidate-bar")).toHaveCount(0);
+    const original = page.locator("[data-side=right] .sg-original");
+    const single = (await original.boundingBox())!;
+    const surface = (await page.locator("[data-side=right] .sg-image-surface").boundingBox())!;
+    expect(single.x).toBeGreaterThanOrEqual(surface.x - 1);
+    expect(single.y).toBeGreaterThanOrEqual(surface.y - 1);
+    expect(single.x + single.width).toBeLessThanOrEqual(surface.x + surface.width + 1);
+    expect(single.y + single.height).toBeLessThanOrEqual(surface.y + surface.height + 1);
+    await page.getByRole("button", { name: "Show candidates", exact: true }).click();
+    await expect(page.locator(".sg-candidate-bar")).toBeVisible();
+    await page.getByRole("button", { name: "Hide candidates", exact: true }).click();
+    await page.getByRole("button", { name: "Pin as reference", exact: true }).click();
+    await expect(page.locator("[data-side=right] .sg-quality-status")).toHaveText("Original");
+    const comparison = (await original.boundingBox())!;
+    expect(single.height).toBeGreaterThan(comparison.height * 1.1);
+    expect(single.width).toBeGreaterThan(comparison.width * 1.1);
+  });
+}
+
+test("rapid forward and reverse navigation shows a prepared preview while originals are held", async ({ page }) => {
+  await page.goto("/proxy/8188/");
+  await page.getByRole("button", { name: "Open Gallery", exact: true }).click();
+  await expect(page.locator(".sg-thumb-button img").first()).toBeVisible();
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => (release = resolve));
+  const prepared: string[] = [];
+  page.on("requestfinished", (request) => {
+    if (request.url().includes("/thumbnail?") && request.url().includes("size=512")) prepared.push(request.url());
+  });
+  await page.route("**/original?**", async (route) => { await pending; await route.continue(); });
+  try {
+    await page.getByRole("button", { name: "View shiba_00000.png", exact: true }).click();
+    await expect.poll(() => prepared.some((url) => url.includes("/out-3/thumbnail"))).toBe(true);
+    for (let i = 0; i < 6; i++) await page.keyboard.press("ArrowRight");
+    await expect(page.locator("[data-side=right]")).toHaveAttribute("data-image", "out-6");
+    await expect(page.locator(".sg-image-preview img")).toBeVisible();
+    await page.keyboard.press("ArrowLeft");
+    await expect(page.locator("[data-side=right]")).toHaveAttribute("data-image", "out-5");
+    await expect(page.locator(".sg-image-preview img")).toBeVisible();
+    await expect(page.locator(".sg-quality-status")).toContainText("Loading original");
+    await page.getByRole("button", { name: "Close Gallery", exact: true }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  } finally { release(); }
+});

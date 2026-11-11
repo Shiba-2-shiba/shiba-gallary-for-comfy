@@ -85,3 +85,16 @@ it("shows a cached preview while prioritizing the original and keeps loading tex
   w.unmount();
   thumbnailCache.clear();
 });
+
+it("clears the obsolete native original source on navigation and close", async () => {
+  const image = (id: string) => ({ id, name: id, folder_id: "a", revision: "v", mtime_ns: 1, width: 100, height: 100 });
+  const w = mount(ImagePane, { props: {
+    image: image("a"), api: new GalleryApi({ apiURL: (r) => r }), side: "right",
+    transform: { scale: 1, x: 0, y: 0 }, models: [], modelStatus: "No model",
+  }});
+  const old = w.get(".sg-original").element;
+  await w.setProps({ image: image("b") });
+  expect(old.getAttribute("src")).toBeNull();
+  const current = w.get(".sg-original").element;
+  w.unmount(); expect(current.getAttribute("src")).toBeNull();
+});

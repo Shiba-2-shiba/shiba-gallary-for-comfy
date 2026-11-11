@@ -82,6 +82,8 @@ it("opens original with model outside image, pins reference and switches only th
   await flushPromises();
   await w.findAll("[data-action=view]")[0].trigger("click");
   await flushPromises();
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await flushPromises();
   expect(w.text()).toContain("saved-model.safetensors");
   await w.get("[data-action=pin]").trigger("click");
   await flushPromises();
@@ -147,6 +149,7 @@ it("allows retrying a temporary metadata request failure without closing compari
   await w.findAll("[data-action=view]")[0].trigger("click");
   await flushPromises();
   await w.get("[data-action=settings]").trigger("click");
+  await flushPromises();
   expect(w.text()).toContain("temporary network failure");
   fail = false;
   await w
@@ -238,6 +241,162 @@ it("inserts the original image before requesting nonessential metadata", async (
   await flushPromises();
   await w.findAll("[data-action=view]")[0].trigger("click");
   await flushPromises();
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await flushPromises();
   expect(imagePresent).toBe(true);
   w.unmount();
+});
+
+it("opens single view with the candidate strip collapsed but keeps navigation and an explicit toggle", async () => {
+  const w = fixture();
+  await w.get("[data-action=open]").trigger("click"); await flushPromises();
+  await w.findAll("[data-action=view]")[0].trigger("click");
+  expect(w.get("dialog").classes()).toContain("sg-single-view");
+  expect(w.find(".sg-candidate-bar").exists()).toBe(false);
+  expect(w.find("[data-action=next]").exists()).toBe(true);
+  await w.get("[data-action=candidates]").trigger("click");
+  expect(w.find(".sg-candidate-bar").exists()).toBe(true);
+  await w.get("[data-action=candidates]").trigger("click");
+  expect(w.find(".sg-candidate-bar").exists()).toBe(false);
+  await w.get("[data-action=pin]").trigger("click");
+  expect(w.find(".sg-candidate-bar").exists()).toBe(true);
+  w.unmount();
+});
+
+it("debounces fast image steps and aborts obsolete model metadata on navigation and close", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const w = fixture();
+  const previous = fetch;
+  const requested: string[] = [];
+  const signals: AbortSignal[] = [];
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, options?: RequestInit) => {
+    if (!String(input).includes("/metadata")) return previous(input, options);
+    requested.push(String(input)); signals.push(options!.signal!);
+    return new Promise<Response>((_resolve, reject) => options!.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError"))));
+  });
+  try {
+    await w.get("[data-action=open]").trigger("click"); await flushPromises();
+    await w.findAll("[data-action=view]")[0].trigger("click");
+    await w.get("[data-action=next]").trigger("click");
+    await w.get("[data-action=next]").trigger("click");
+    expect(requested).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(150);
+    expect(requested).toHaveLength(1); expect(requested[0]).toContain("/three/metadata");
+    await w.get("[data-action=previous]").trigger("click");
+    expect(signals[0].aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(150);
+    expect(requested).toHaveLength(2); expect(requested[1]).toContain("/two/metadata");
+    await w.get("[data-action=close]").trigger("click");
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(requested).toHaveLength(2);
+  } finally { w.unmount(); vi.useRealTimers(); }
+});
+
+it("drops obsolete metadata after a folder change and reopens without reusing cancelled work", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const w = fixture();
+  const previous = fetch;
+  const requests: Array<{ signal: AbortSignal; finish: (response: Response) => void }> = [];
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, options?: RequestInit) => {
+    if (!String(input).includes("/metadata")) return previous(input, options);
+    return new Promise<Response>((finish) => requests.push({ signal: options!.signal!, finish }));
+  });
+  const response = (name: string) => new Response(JSON.stringify({ status: "ok", prompt: {
+    "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: name } },
+  }, workflow: null, warnings: [] }));
+  try {
+    await w.get("[data-action=open]").trigger("click"); await flushPromises();
+    await w.findAll("[data-action=view]")[0].trigger("click");
+    await vi.advanceTimersByTimeAsync(150);
+    await w.get('[aria-label="Output folder"]').setValue("sub"); await flushPromises();
+    expect(requests[0].signal.aborted).toBe(true);
+    await w.findAll("[data-action=view]")[0].trigger("click");
+    await vi.advanceTimersByTimeAsync(150);
+    await w.get("[data-action=close]").trigger("click");
+    expect(requests[1].signal.aborted).toBe(true);
+    await w.get("[data-action=open]").trigger("click"); await flushPromises();
+    await w.findAll("[data-action=view]")[0].trigger("click");
+    await vi.advanceTimersByTimeAsync(150);
+    expect(requests).toHaveLength(3);
+    requests[2].finish(response("current-model")); await flushPromises();
+    requests[0].finish(response("stale-folder")); requests[1].finish(response("stale-session")); await flushPromises();
+    expect(w.text()).toContain("current-model");
+    expect(w.text()).not.toContain("stale-folder"); expect(w.text()).not.toContain("stale-session");
+  } finally { w.unmount(); vi.useRealTimers(); }
+});
+
+it("prepares a directional neighbor window and reuses it after a rapid reversal", async () => {
+  const w = fixture();
+  const previous = fetch;
+  const previewFetches: string[] = [];
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, options?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/images?")) return Promise.resolve(new Response(JSON.stringify({
+      images: Array.from({ length: 30 }, (_, i) => image("i" + i)), next_cursor: null, version: "v1",
+    })));
+    if (url.includes("/thumbnail") && url.includes("size=512")) previewFetches.push(url);
+    return previous(input, options);
+  });
+  try {
+    await w.get("[data-action=open]").trigger("click"); await flushPromises();
+    await w.findAll("[data-action=view]")[0].trigger("click"); await flushPromises();
+    expect(previewFetches.some((url) => url.includes("/i3/thumbnail"))).toBe(true);
+    for (let i = 0; i < 6; i++) await w.get("[data-action=next]").trigger("click");
+    await flushPromises();
+    await w.get("[data-action=previous]").trigger("click"); await flushPromises();
+    expect(w.get("[data-side=right]").attributes("data-image")).toBe("i5");
+    expect(w.find(".sg-image-preview img").exists()).toBe(true);
+    expect(previewFetches.filter((url) => url.includes("/i5/thumbnail"))).toHaveLength(1);
+  } finally { w.unmount(); }
+});
+
+it("reveals the current candidate when expanding the previously collapsed strip", async () => {
+  const w = fixture();
+  const previous = fetch;
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, options?: RequestInit) => String(input).includes("/images?")
+    ? Promise.resolve(new Response(JSON.stringify({ images: Array.from({ length: 30 }, (_, i) => image("i" + i)), next_cursor: null, version: "v1" })))
+    : previous(input, options));
+  const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.classList.contains("sg-candidates") ? 200 : 640;
+  });
+  const offset = vi.spyOn(HTMLElement.prototype, "offsetLeft", "get").mockImplementation(function (this: HTMLElement) {
+    return this.classList.contains("sg-current") ? 455 : 0;
+  });
+  const itemWidth = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(58);
+  try {
+    await w.get("[data-action=open]").trigger("click"); await flushPromises();
+    await w.findAll("[data-action=view]")[0].trigger("click");
+    for (let i = 0; i < 9; i++) await w.get("[data-action=next]").trigger("click");
+    await w.get("[data-action=candidates]").trigger("click"); await flushPromises();
+    expect(w.get(".sg-candidates").element.scrollLeft).toBe(313);
+  } finally { w.unmount(); width.mockRestore(); offset.mockRestore(); itemWidth.mockRestore(); }
+});
+
+it("does not restart saved-text search requests after the gallery component is unmounted", async () => {
+  const w = fixture();
+  const previous = fetch;
+  const requested: string[] = [];
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, options?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/images?")) return Promise.resolve(new Response(JSON.stringify({
+      images: ["one", "two", "three", "four", "five", "six"].map(image), next_cursor: null, version: "v1",
+    })));
+    if (url.includes("/metadata")) {
+      requested.push(url);
+      return new Promise<Response>((_resolve, reject) => options!.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError"))));
+    }
+    return previous(input, options);
+  });
+  await w.get("[data-action=open]").trigger("click"); await flushPromises();
+  await w.findAll(".sg-pin")[0].trigger("click");
+  const { normalizeMetadata } = await import("../src/metadata");
+  (w.vm as any).meta.set("one:1", normalizeMetadata({ status: "ok", prompt: {
+    "1": { class_type: "CLIPTextEncode", inputs: { text: "cat" } },
+  }, workflow: null, warnings: [] }));
+  await w.findAll("button").find((button) => button.text() === "Find matching saved text")!.trigger("click");
+  await flushPromises();
+  expect(requested).toHaveLength(2);
+  w.unmount(); await flushPromises();
+  expect(requested).toHaveLength(2);
 });

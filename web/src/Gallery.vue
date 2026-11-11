@@ -32,10 +32,16 @@ import ImagePane from "./ImagePane.vue";
 import MetadataPanel from "./MetadataPanel.vue";
 import Thumbnail from "./Thumbnail.vue";
 import { thumbnailCache } from "./thumbnailCache";
+import { NeighborPrefetcher, neighborIndexes } from "./neighborPrefetch";
 const props = defineProps<{ api: GalleryApi }>();
 const s = reactive(createSession());
 const folders = ref<Folder[]>([]);
 const large = ref(true);
+const showCandidates = ref(false);
+const neighbors = new NeighborPrefetcher();
+let previousIndex = -1;
+let previousMode = "grid";
+let direction: 1 | -1 = 1;
 const dialog = ref<HTMLDialogElement>();
 const leftPane = ref<InstanceType<typeof ImagePane>>();
 const rightPane = ref<InstanceType<typeof ImagePane>>();
@@ -50,8 +56,13 @@ const helper = ref("");
 const searching = ref(false);
 const folderLoading = ref(false);
 const meta = reactive(new Map<string, NormalizedMetadata>());
-const pending = new Map<string, Promise<NormalizedMetadata | undefined>>();
-let metadataAbort = new AbortController();
+type MetadataOwner = "view" | "search";
+const pending = new Map<string, {
+  promise: Promise<NormalizedMetadata | undefined>;
+  abort: AbortController;
+  owners: Set<MetadataOwner>;
+}>();
+let metadataTimer: ReturnType<typeof setTimeout> | undefined;
 let folderAbort = new AbortController();
 let life = 0;
 let searchToken = 0;
@@ -106,6 +117,22 @@ const candidateStrip = computed(() => {
   return choices.value.slice(Math.max(0, index - 7), index + 8);
 });
 watch(
+  () => [s.mode, choiceIndex.value, candidateStrip.value.map(cacheKey).join(",")],
+  () => {
+    const index = choiceIndex.value;
+    if (s.mode === previousMode && previousIndex >= 0 && index !== previousIndex)
+      direction = index < previousIndex ? -1 : 1;
+    else if (s.mode !== previousMode) direction = 1;
+    previousIndex = index;
+    previousMode = s.mode;
+    // Post-render: the new foreground pane claims any shared in-flight preview
+    // before its old prefetch subscription is released.
+    neighbors.update(s.mode === "grid" ? [] : neighborIndexes(choices.value.length, index, direction)
+      .map((neighbor) => props.api.imageURL(choices.value[neighbor], "thumbnail", 512)));
+  },
+  { flush: "post" },
+);
+watch(
   () => s.images,
   (images, previous) => {
     if (s.mode !== "grid")
@@ -124,6 +151,7 @@ watch(
     s.mode,
     s.rightId,
     s.currentId,
+    showCandidates.value,
     candidateStrip.value.map((i) => i.id).join(","),
   ],
   async () => {
@@ -146,13 +174,19 @@ function modelStatus(value: NormalizedMetadata | undefined) {
 }
 async function metadata(
   image: ImageRecord | undefined,
+  owner: MetadataOwner = "view",
 ): Promise<NormalizedMetadata | undefined> {
   if (!image) return;
   const key = cacheKey(image);
   if (meta.has(key)) return meta.get(key);
-  if (pending.has(key)) return pending.get(key);
+  const existing = pending.get(key);
+  if (existing) {
+    existing.owners.add(owner);
+    return existing.promise;
+  }
   const epoch = life;
-  const signal = metadataAbort.signal;
+  const abort = new AbortController();
+  const signal = abort.signal;
   const request = props.api
     .metadata(image, signal)
     .then(normalizeMetadata)
@@ -167,7 +201,7 @@ async function metadata(
           }),
     )
     .then((value) => {
-      if (value && epoch === life) {
+      if (value && epoch === life && !signal.aborted) {
         meta.set(key, value);
         if (meta.size > 200) {
           const protectedKeys = new Set([
@@ -183,32 +217,54 @@ async function metadata(
           }
         }
       }
-      return value;
+      return epoch === life && !signal.aborted ? value : undefined;
     })
     .finally(() => {
-      if (pending.get(key) === request) pending.delete(key);
+      if (pending.get(key)?.promise === request) pending.delete(key);
     });
-  pending.set(key, request);
+  pending.set(key, { promise: request, abort, owners: new Set([owner]) });
   return request;
 }
+function releaseMetadata(owner: MetadataOwner, keep = new Set<string>()) {
+  for (const [key, request] of pending) {
+    if (keep.has(key)) continue;
+    request.owners.delete(owner);
+    if (!request.owners.size) {
+      request.abort.abort();
+      pending.delete(key);
+    }
+  }
+}
+function stopMetadata() {
+  clearTimeout(metadataTimer);
+  releaseMetadata("view");
+  releaseMetadata("search");
+}
+function visibleMetadataImages() {
+  return (s.mode === "grid" ? [] : s.mode === "compare" ? [left.value, right.value] : [right.value])
+    .filter((image): image is ImageRecord => !!image);
+}
+function loadVisibleMetadata() {
+  clearTimeout(metadataTimer);
+  for (const image of visibleMetadataImages()) void metadata(image);
+}
 watch(
-  () => [
-    left.value?.id,
-    left.value?.revision,
-    right.value?.id,
-    right.value?.revision,
-  ],
+  () => [s.mode, left.value?.id, left.value?.revision, right.value?.id, right.value?.revision],
   () => {
-    void metadata(left.value);
-    void metadata(right.value);
+    clearTimeout(metadataTimer);
+    const visible = visibleMetadataImages();
+    releaseMetadata("view", new Set(visible.map(cacheKey)));
+    // Let burst navigation settle. Metadata is secondary to both the current
+    // native original and its immediate compressed preview.
+    if (visible.length) metadataTimer = setTimeout(loadVisibleMetadata, 120);
     s.manualMatches = {};
   },
   { flush: "post" },
 );
+watch(() => s.panel, (open) => { if (open) loadVisibleMetadata(); });
 async function open() {
   if (s.open) return;
   life++;
-  metadataAbort = new AbortController();
   folderAbort = new AbortController();
   s.open = true;
   gridPosition.value.scroll = 0;
@@ -238,11 +294,12 @@ async function open() {
     }, 5000);
 }
 function close() {
+  neighbors.clear();
   life++;
   searchToken++;
   searching.value = false;
   folderAbort.abort();
-  metadataAbort.abort();
+  stopMetadata();
   c.dispose();
   clearInterval(interval);
   pending.clear();
@@ -254,6 +311,8 @@ function close() {
   void nextTick(() => launcher.value?.focus());
 }
 async function chooseFolder(event: Event) {
+  stopMetadata();
+  neighbors.clear();
   gridPosition.value.scroll = 0;
   searchToken++;
   searching.value = false;
@@ -264,6 +323,7 @@ async function refresh() {
   if (s.open) await c.refresh();
 }
 function view(id: string) {
+  showCandidates.value = false;
   s.currentId = id;
   s.mode = "single";
   s.panel = false;
@@ -274,6 +334,7 @@ function check(id: string) {
   else s.checked.add(id);
 }
 function cancelSearch() {
+  releaseMetadata("search");
   searchToken++;
   searching.value = false;
   helper.value = "";
@@ -343,7 +404,7 @@ async function findPrompt() {
   searching.value = true;
   helper.value =
     "Checking saved text in " + s.images.length + " loaded images…";
-  const base = await metadata(reference);
+  const base = await metadata(reference, "search");
   if (token !== searchToken) return;
   if (!base || samePrompt(base, base) === null) {
     helper.value =
@@ -360,7 +421,7 @@ async function findPrompt() {
     while (offset < snapshot.length && token === searchToken) {
       const item = snapshot[offset++];
       if (item.id === reference!.id) continue;
-      const value = await metadata(item);
+      const value = await metadata(item, "search");
       if (token !== searchToken) return;
       const match = value ? samePrompt(base!, value) : null;
       if (match === true) found.add(item.id);
@@ -406,10 +467,13 @@ onMounted(() => {
   document.addEventListener("visibilitychange", eventRefresh);
 });
 onBeforeUnmount(() => {
+  life++;
+  searchToken++;
+  neighbors.clear();
   thumbnailCache.clear();
   clearInterval(interval);
   folderAbort.abort();
-  metadataAbort.abort();
+  stopMetadata();
   c.dispose();
   props.api.comfy.removeEventListener?.("executed", eventRefresh);
   document.removeEventListener("visibilitychange", eventRefresh);
@@ -430,6 +494,7 @@ onBeforeUnmount(() => {
     v-if="s.open"
     ref="dialog"
     class="sg-dialog"
+    :class="{ 'sg-single-view': s.mode === 'single' }"
     aria-label="Shiba Gallery"
     @keydown="keydown"
     @cancel.prevent
@@ -597,6 +662,13 @@ onBeforeUnmount(() => {
             @change="setLinked(s, ($event.target as HTMLInputElement).checked)"
           />
           Link zoom / pan</label
+        ><button
+          v-if="s.mode === 'single'"
+          data-action="candidates"
+          :aria-expanded="showCandidates"
+          @click="showCandidates = !showCandidates"
+        >{{ showCandidates ? "Hide candidates" : "Show candidates" }}</button
+        ><button v-if="s.mode === 'single' && !showCandidates && hasMore" @click="c.loadMore()">Load more</button
         ><button @click="fit">Fit</button
         ><button
           :aria-pressed="s.panel"
@@ -648,7 +720,7 @@ onBeforeUnmount(() => {
           @retry="reloadMetadata"
         />
       </div>
-      <div class="sg-candidate-bar">
+      <div v-if="s.mode === 'compare' || showCandidates" class="sg-candidate-bar">
         <div
           ref="candidateRow"
           class="sg-candidates"
@@ -675,6 +747,7 @@ onBeforeUnmount(() => {
             <Thumbnail
               :url="api.imageURL(image, 'thumbnail', 256)"
               :alt="image.name"
+              priority="low"
             />
           </button>
         </div>

@@ -740,3 +740,14 @@
     display: none;
   }
 }
+
+/* Single view is height-limited for square/portrait images. Reclaim chrome
+   instead of cropping the original or silently changing its fit/zoom. */
+.sg-single-view .sg-header { padding: 7px 15px; gap: 12px; }
+.sg-single-view .sg-brand small { display: none; }
+.sg-single-view .sg-brand strong { font-size: 17px; }
+.sg-single-view .sg-mark { font-size: 23px; }
+.sg-single-view .sg-pane-caption { padding: 4px 12px; min-height: 31px; }
+.sg-single-view .sg-view-toolbar { padding-top: 6px; padding-bottom: 6px; }
+.sg-single-view .sg-view-footer { padding-top: 4px; padding-bottom: 4px; }
+.sg-candidate-bar { flex-shrink: 0; }

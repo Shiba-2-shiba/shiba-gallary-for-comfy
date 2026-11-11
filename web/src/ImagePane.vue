@@ -43,6 +43,8 @@ const style = computed(() => ({
 watch(
   () => [props.image?.id, props.image?.revision],
   () => {
+    // Removing a node alone may leave its native image request in flight.
+    currentImage.value?.removeAttribute("src");
     loaded.value = false;
     failed.value = false;
     previewReady.value = false;
@@ -116,7 +118,10 @@ onMounted(() => {
   observer = new ResizeObserver(measure);
   if (surface.value) observer.observe(surface.value);
 });
-onBeforeUnmount(() => observer?.disconnect());
+onBeforeUnmount(() => {
+  currentImage.value?.removeAttribute("src");
+  observer?.disconnect();
+});
 </script>
 <template>
   <section class="sg-image-pane" :data-side="side" :data-image="image?.id">
@@ -157,6 +162,7 @@ onBeforeUnmount(() => observer?.disconnect());
           :cached-fallback-url="api.imageURL(image, 'thumbnail', 256)"
           :alt="image.name + ' · preview'"
           quiet
+          priority="high"
           @ready="previewLoaded"
         />
       </div>
