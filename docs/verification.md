@@ -91,3 +91,12 @@ Selected previews now have foreground priority. Background candidate previews/pr
 These changes reduce avoidable contention and provide an earlier compressed preview; no user-network latency reduction has been measured. Actual original transfer time still depends on image size, network and server load. Browser regression coverage includes larger square-image single view and navigation through delayed originals. Chromium still aborts before page load with the environment's socket permission error, so those browser assertions and real ComfyUI/Paperspace/Windows behaviour remain unverified locally.
 
 Final local checks for this follow-up: 101 frontend unit/component tests passed; Vue/TypeScript typecheck, production build, production-bundle VM smoke and diff whitespace checks passed. Backend code is unchanged and its suite was not rerun for this frontend-only patch. The independent review's candidate-strip reveal and disposed-search cancellation findings were corrected and regression-tested.
+
+
+## Cross-realm Blob CI regression — 2026-11-11
+
+Reproduced the reported assertion failure on Node 22.23.4 with the repository's jsdom/Vitest environment. The original test passed on Node 24.22.1. Node Response receiving a jsdom Blob can stringify it to the 13-byte text "[object Blob]" and produce a Blob from a different constructor, so the instanceof assertion was not a valid functional check.
+
+The fixture now supplies a plain response body with an explicit MIME type and checks its seven-byte size, actual text, shared result identity, cache identity, and a cache hit without another fetch. Reading uses Blob.text() where available, otherwise FileReader for jsdom's Blob implementation. Cancellation and late-response cache exclusion remain covered. No production code or distribution assets changed.
+
+Both Node 22.23.4 and Node 24.22.1 passed all 101 frontend tests after the fix. Vue/TypeScript checking, production build and bundle smoke also passed locally. Browser E2E and backend tests were not rerun for this test-only correction.
