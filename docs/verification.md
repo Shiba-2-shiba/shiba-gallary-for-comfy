@@ -52,3 +52,11 @@ No latency or improvement claim is accepted solely from Vue migration or local l
 - Real ComfyUI frontend, Paperspace network/GPU workload and upstream performance comparison: **not run**.
 
 Run a local real-HTTP synthetic demo with `python -m gallery_backend.demo --port 8189 --count 100`. It uses generated fixtures only, not the user's output images. For the production-bundle mock-host browser suite, run `cd web && npm run build && npx playwright install chromium && npm run test:browser`. A system Chromium can be selected with `CHROMIUM_PATH`.
+
+## Browser CI assertion follow-up — 2026-11-11
+
+The user supplied CI output where one browser case failed the all-request pathname prefix assertion and the second browser case passed. The original failure did not print offending URLs, so its exact request cannot be identified from that output alone.
+
+The assertion incorrectly treated local `blob:` image handles (created after successful proxied thumbnail fetches) as HTTP paths. A regression test reproduced that classifier defect. The test now validates origin and proxy prefix for HTTP(S) transport, ignores non-HTTP local resource URLs, retains complete offending URLs in failure output, and repeats the check after comparison/folder navigation. Missing-prefix and cross-origin HTTP requests still fail. No production application logic changed.
+
+After the fix: 71 frontend tests, typecheck/build and production-bundle smoke pass. Browser CI rerun result is still pending/unverified from this executor.

@@ -1,12 +1,16 @@
 import { test, expect } from "@playwright/test";
+import { unexpectedProxyRequests } from "./proxyRequests";
 test("production extension loads through proxy, virtualizes grid and preserves comparison lifecycle", async ({
   page,
+  baseURL,
 }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  const paths: string[] = [];
-  page.on("request", (request) => paths.push(new URL(request.url()).pathname));
-  await page.goto("/proxy/8188/");
+  const requests: string[] = [];
+  page.on("request", (request) => requests.push(request.url()));
+  const expectedPageURL = new URL("/proxy/8188/", baseURL).href;
+  await page.goto(expectedPageURL);
+  await expect(page).toHaveURL(expectedPageURL);
   await page.getByRole("button", { name: "Open Gallery", exact: true }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.getByTestId("image-grid")).toBeVisible();
@@ -14,10 +18,9 @@ test("production extension loads through proxy, virtualizes grid and preserves c
   const count = await page.locator(".sg-card").count();
   expect(count).toBeLessThan(100);
   expect(
-    paths.every(
-      (path) => path.startsWith("/proxy/8188/") || path === "/favicon.ico",
-    ),
-  ).toBeTruthy();
+    unexpectedProxyRequests(requests, expectedPageURL),
+    "HTTP requests must keep the same origin and proxy prefix",
+  ).toEqual([]);
   await page.getByLabel("Select shiba_00000.png", { exact: true }).check();
   await page.getByLabel("Select shiba_00001.png", { exact: true }).check();
   await page.getByLabel("Select shiba_00002.png", { exact: true }).check();
@@ -56,6 +59,11 @@ test("production extension loads through proxy, virtualizes grid and preserves c
   await expect(page.getByText("12 images", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Large", exact: true }).click();
   await page.screenshot({ path: "harness/grid.png" });
+  expect(
+    unexpectedProxyRequests(requests, expectedPageURL),
+    "HTTP requests after comparison/folder navigation must keep the proxy prefix",
+  ).toEqual([]);
+  await expect(page).toHaveURL(expectedPageURL);
   expect(errors).toEqual([]);
 });
 test("linked pan zoom and original pixel display preserve left/right placement", async ({
