@@ -11,14 +11,20 @@ const props = defineProps<{
   models: string[];
   modelStatus: string;
   unavailable?: boolean;
+  deferHeavy?: boolean;
 }>();
-const emit = defineEmits<{ transform: [value: Transform]; original: [] }>();
+const emit = defineEmits<{ transform: [value: Transform]; original: []; originalReady: [] }>();
 const currentImage = ref<HTMLImageElement>();
 const surface = ref<HTMLElement>();
 const width = ref(640);
 const height = ref(600);
 const natural = ref({ width: 0, height: 0 });
 const loaded = ref(false);
+const variant = ref<"display" | "original">("display");
+const imageSource = computed(() => props.image && (variant.value === "original" || !props.deferHeavy)
+  ? props.api.imageURL(props.image, variant.value) : undefined);
+let imageEpoch = 0;
+let pendingOriginalScale = false;
 const failed = ref(false);
 const previewReady = ref(false);
 let observer: ResizeObserver;
@@ -92,22 +98,56 @@ watch(
     failed.value = false;
     previewReady.value = false;
     natural.value = { width: 0, height: 0 };
+    variant.value = "display";
+    pendingOriginalScale = false;
   },
 );
+watch(imageSource, () => {
+  imageEpoch++;
+  currentImage.value?.removeAttribute("src");
+  loaded.value = false;
+  failed.value = false;
+}, { flush: "sync" });
+function requestOriginal() {
+  if (!props.image || (variant.value === "original" && loaded.value)) return;
+  variant.value = "original";
+  pendingOriginalScale = true;
+}
 async function imageLoaded(event: Event) {
+  const epoch = imageEpoch;
   if (event.target !== currentImage.value) return;
   const image = event.target as HTMLImageElement;
   if (image.decode) {
     try {
       await image.decode();
     } catch {
-      if (image === currentImage.value) failed.value = true;
+      if (epoch === imageEpoch && image === currentImage.value) failed.value = true;
       return;
     }
   }
-  if (image !== currentImage.value) return;
-  natural.value = { width: image.naturalWidth, height: image.naturalHeight };
+  if (epoch !== imageEpoch || image !== currentImage.value) return;
+  // A resized display WebP must never redefine the original-pixel zoom scale.
+  if (variant.value === "original" || !props.image?.width || !props.image?.height)
+    natural.value = { width: image.naturalWidth, height: image.naturalHeight };
+  else {
+    const { width: originalWidth, height: originalHeight } = props.image;
+    // The catalog may describe raw pixels while the display is EXIF-oriented.
+    // Only a verified 90-degree aspect swap changes the original dimensions;
+    // allow one resized pixel of rounding, never use the smaller display size.
+    const swapped = Math.abs(originalHeight * image.naturalHeight - originalWidth * image.naturalWidth)
+      <= Math.max(originalWidth, originalHeight);
+    const normal = Math.abs(originalWidth * image.naturalHeight - originalHeight * image.naturalWidth)
+      <= Math.max(originalWidth, originalHeight);
+    if (swapped && !normal)
+      natural.value = { width: originalHeight, height: originalWidth };
+  }
   loaded.value = true;
+  if (variant.value === "original" && pendingOriginalScale) {
+    pendingOriginalScale = false;
+    // An early 1:1 request may precede EXIF orientation discovery. Recompute
+    // against decoded original dimensions, unless the user has since moved.
+    emit("originalReady");
+  }
 }
 function previewLoaded(size: { width: number; height: number }) {
   if (loaded.value) return;
@@ -117,8 +157,10 @@ function previewLoaded(size: { width: number; height: number }) {
 function imageFailed(event: Event) {
   if (event.target === currentImage.value) failed.value = true;
 }
-defineExpose({ originalScale: computed(() => 1 / fit.value) });
+function cancelOriginalScale() { pendingOriginalScale = false; }
+defineExpose({ originalScale: computed(() => 1 / fit.value), requestOriginal, cancelOriginalScale });
 function wheel(event: WheelEvent) {
+  pendingOriginalScale = false;
   const current = inputTransform();
   const old = current.scale;
   const scale = Math.min(
@@ -136,6 +178,7 @@ function wheel(event: WheelEvent) {
 }
 function down(event: PointerEvent) {
   if (event.button !== 0 || drag) return;
+  pendingOriginalScale = false;
   drag = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
   surface.value?.setPointerCapture(event.pointerId);
 }
@@ -163,11 +206,13 @@ function stopDrag(event: PointerEvent) {
   flushInput();
 }
 function resetTransform() {
+  pendingOriginalScale = false;
   cancelInput();
   emit("transform", { scale: 1, x: 0, y: 0 });
 }
 function originalPixels() {
   cancelInput();
+  requestOriginal();
   emit("original");
 }
 function measure() {
@@ -182,6 +227,7 @@ onMounted(() => {
   if (surface.value) observer.observe(surface.value);
 });
 onBeforeUnmount(() => {
+  imageEpoch++;
   cancelInput();
   currentImage.value?.removeAttribute("src");
   observer?.disconnect();
@@ -194,11 +240,13 @@ onBeforeUnmount(() => {
       ><span>{{ image?.name ?? "No candidate" }}</span
       ><button
         :aria-label="'Show ' + side + ' original pixels'"
-        :disabled="!loaded"
+        :disabled="!image"
         @click="originalPixels"
       >
         1:1
       </button>
+      <a v-if="image" :href="api.imageURL(image, 'download')" :download="image.name"
+        :aria-label="'Download ' + side + ' original image'">Download original</a>
     </div>
     <p v-if="unavailable" class="sg-unavailable" role="status">
       No longer present in this folder. The selected image is kept in place; the
@@ -233,9 +281,9 @@ onBeforeUnmount(() => {
       <img
         class="sg-original"
         ref="currentImage"
-        v-if="image && !failed"
-        :key="image.id + image.revision"
-        :src="api.imageURL(image, 'original')"
+        v-if="image && imageSource && !failed"
+        :key="image.id + image.revision + variant"
+        :src="imageSource"
         :alt="image.name"
         :style="{ ...style, opacity: loaded ? 1 : 0 }"
         fetchpriority="high"
@@ -262,12 +310,12 @@ onBeforeUnmount(() => {
       >
       <span class="sg-quality-status" role="status">{{
         loaded
-          ? "Original"
+          ? variant === "original" ? "Original" : "High quality WebP"
           : failed
-            ? "Original unavailable"
-            : previewReady
+            ? variant === "original" ? "Original unavailable" : "High quality WebP unavailable"
+            : variant === "original"
               ? "Preview · Loading original…"
-              : "Loading original…"
+              : deferHeavy ? "Preview · Waiting for navigation…" : "Preview · Loading high quality WebP…"
       }}</span>
     </div>
   </section>

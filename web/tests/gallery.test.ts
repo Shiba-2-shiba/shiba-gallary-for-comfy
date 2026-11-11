@@ -28,9 +28,13 @@ beforeAll(() => {
   };
 });
 afterEach(() => vi.unstubAllGlobals());
+function pageResponse(input: RequestInfo | URL, page: unknown) {
+  return new Response(JSON.stringify(String(input).includes("/bootstrap?") ? { folder: {id:"out",name:"output"}, page } : page));
+}
 function fixture() {
   vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
     const url = String(input);
+    if (url.includes("/bootstrap?")) return pageResponse(input, {images:[image("one"), image("two"), image("three")], next_cursor:null,version:"v1"});
     return new Response(
       JSON.stringify(
         url.includes("/folders")
@@ -165,15 +169,12 @@ it("restores the grid viewport after viewing an image", async () => {
   const w = fixture();
   const previous = fetch;
   vi.stubGlobal("fetch", (input: RequestInfo | URL) =>
-    String(input).includes("/images?")
+    (String(input).includes("/images?") || String(input).includes("/bootstrap?"))
       ? Promise.resolve(
-          new Response(
-            JSON.stringify({
+          pageResponse(input, {
               images: Array.from({ length: 120 }, (_, i) => image("i" + i)),
-              next_cursor: null,
-              version: "v1",
-            }),
-          ),
+              next_cursor: null, version: "v1",
+          }),
         )
       : previous(input),
   );
@@ -280,11 +281,11 @@ it("debounces fast image steps and aborts obsolete model metadata on navigation 
     await w.get("[data-action=next]").trigger("click");
     await w.get("[data-action=next]").trigger("click");
     expect(requested).toHaveLength(0);
-    await vi.advanceTimersByTimeAsync(150);
+    await vi.advanceTimersByTimeAsync(300);
     expect(requested).toHaveLength(1); expect(requested[0]).toContain("/three/metadata");
     await w.get("[data-action=previous]").trigger("click");
     expect(signals[0].aborted).toBe(true);
-    await vi.advanceTimersByTimeAsync(150);
+    await vi.advanceTimersByTimeAsync(300);
     expect(requested).toHaveLength(2); expect(requested[1]).toContain("/two/metadata");
     await w.get("[data-action=close]").trigger("click");
     expect(signals.every((signal) => signal.aborted)).toBe(true);
@@ -332,9 +333,9 @@ it("prepares a directional neighbor window and reuses it after a rapid reversal"
   const previewFetches: string[] = [];
   vi.stubGlobal("fetch", (input: RequestInfo | URL, options?: RequestInit) => {
     const url = String(input);
-    if (url.includes("/images?")) return Promise.resolve(new Response(JSON.stringify({
+    if (url.includes("/images?") || url.includes("/bootstrap?")) return Promise.resolve(pageResponse(input, {
       images: Array.from({ length: 30 }, (_, i) => image("i" + i)), next_cursor: null, version: "v1",
-    })));
+    }));
     if (url.includes("/thumbnail") && url.includes("size=512")) previewFetches.push(url);
     return previous(input, options);
   });
@@ -354,8 +355,8 @@ it("prepares a directional neighbor window and reuses it after a rapid reversal"
 it("reveals the current candidate when expanding the previously collapsed strip", async () => {
   const w = fixture();
   const previous = fetch;
-  vi.stubGlobal("fetch", (input: RequestInfo | URL, options?: RequestInit) => String(input).includes("/images?")
-    ? Promise.resolve(new Response(JSON.stringify({ images: Array.from({ length: 30 }, (_, i) => image("i" + i)), next_cursor: null, version: "v1" })))
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, options?: RequestInit) => (String(input).includes("/images?") || String(input).includes("/bootstrap?"))
+    ? Promise.resolve(pageResponse(input, { images: Array.from({ length: 30 }, (_, i) => image("i" + i)), next_cursor: null, version: "v1" }))
     : previous(input, options));
   const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
     return this.classList.contains("sg-candidates") ? 200 : 640;
@@ -379,9 +380,9 @@ it("does not restart saved-text search requests after the gallery component is u
   const requested: string[] = [];
   vi.stubGlobal("fetch", (input: RequestInfo | URL, options?: RequestInit) => {
     const url = String(input);
-    if (url.includes("/images?")) return Promise.resolve(new Response(JSON.stringify({
+    if (url.includes("/images?") || url.includes("/bootstrap?")) return Promise.resolve(pageResponse(input, {
       images: ["one", "two", "three", "four", "five", "six"].map(image), next_cursor: null, version: "v1",
-    })));
+    }));
     if (url.includes("/metadata")) {
       requested.push(url);
       return new Promise<Response>((_resolve, reject) => options!.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError"))));

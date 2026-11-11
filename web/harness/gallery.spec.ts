@@ -91,6 +91,8 @@ test("linked pan zoom and original pixel display preserve left/right placement",
   await page
     .getByRole("button", { name: "Show left original pixels", exact: true })
     .click();
+  await expect(page.locator("[data-side=left] .sg-quality-status")).toHaveText("Original");
+  await expect(page.locator("[data-side=right] .sg-quality-status")).toHaveText("Original");
   await expect
     .poll(() =>
       page
@@ -126,7 +128,7 @@ test("linked pan zoom and original pixel display preserve left/right placement",
     "246%",
   );
 });
-test("single view immediately reuses the grid preview while its original is still loading", async ({
+test("single view immediately reuses the grid preview while its display WebP is still loading", async ({
   page,
 }) => {
   await page.goto("/proxy/8188/");
@@ -134,7 +136,7 @@ test("single view immediately reuses the grid preview while its original is stil
   await expect(page.locator(".sg-thumb-button img").first()).toBeVisible();
   let release!: () => void;
   const pending = new Promise<void>((resolve) => (release = resolve));
-  await page.route("**/original?**", async (route) => {
+  await page.route("**/display?**", async (route) => {
     await pending;
     await route.continue();
   });
@@ -144,15 +146,15 @@ test("single view immediately reuses the grid preview while its original is stil
       .click();
     await expect(page.locator(".sg-image-preview img")).toBeVisible();
     await expect(page.locator(".sg-quality-status")).toContainText(
-      "Loading original",
+      "Loading high quality WebP",
     );
     await expect(page.locator(".sg-image-surface")).not.toContainText(
-      "Loading original",
+      "Loading high quality WebP",
     );
   } finally {
     release();
   }
-  await expect(page.locator(".sg-quality-status")).toHaveText("Original");
+  await expect(page.locator(".sg-quality-status")).toHaveText("High quality WebP");
   await expect(page.locator(".sg-image-preview")).toHaveCount(0);
 });
 
@@ -161,7 +163,7 @@ for (const index of [0, 1]) {
     await page.goto("/proxy/8188/");
     await page.getByRole("button", { name: "Open Gallery", exact: true }).click();
     await page.getByRole("button", { name: `View shiba_0000${index}.png`, exact: true }).click();
-    await expect(page.locator(".sg-quality-status")).toHaveText("Original");
+    await expect(page.locator(".sg-quality-status")).toHaveText("High quality WebP");
     await expect(page.locator(".sg-candidate-bar")).toHaveCount(0);
     const original = page.locator("[data-side=right] .sg-original");
     const single = (await original.boundingBox())!;
@@ -174,7 +176,7 @@ for (const index of [0, 1]) {
     await expect(page.locator(".sg-candidate-bar")).toBeVisible();
     await page.getByRole("button", { name: "Hide candidates", exact: true }).click();
     await page.getByRole("button", { name: "Pin as reference", exact: true }).click();
-    await expect(page.locator("[data-side=right] .sg-quality-status")).toHaveText("Original");
+    await expect(page.locator("[data-side=right] .sg-quality-status")).toHaveText("High quality WebP");
     // The already-loaded right pane survives mode switching. Its Original
     // status can precede ResizeObserver's new comparison layout measurement.
     await expect.poll(async () => single.height / (await original.boundingBox())!.height).toBeGreaterThan(1.1);
@@ -182,7 +184,7 @@ for (const index of [0, 1]) {
   });
 }
 
-test("rapid forward and reverse navigation shows a prepared preview while originals are held", async ({ page }) => {
+test("rapid forward and reverse navigation shows a prepared preview while display images are held", async ({ page }) => {
   const prepared: string[] = [];
   // Large grid cards already fetch/cache 512px previews. Observe before opening
   // the grid: a single-view cache hit correctly produces no new request.
@@ -194,7 +196,7 @@ test("rapid forward and reverse navigation shows a prepared preview while origin
   await expect(page.locator(".sg-thumb-button img").first()).toBeVisible();
   let release!: () => void;
   const pending = new Promise<void>((resolve) => (release = resolve));
-  await page.route("**/original?**", async (route) => { await pending; await route.continue(); });
+  await page.route("**/display?**", async (route) => { await pending; await route.continue(); });
   try {
     await page.getByRole("button", { name: "View shiba_00000.png", exact: true }).click();
     await expect.poll(() => prepared.some((url) => url.includes("/out-3/thumbnail"))).toBe(true);
@@ -204,7 +206,7 @@ test("rapid forward and reverse navigation shows a prepared preview while origin
     await page.keyboard.press("ArrowLeft");
     await expect(page.locator("[data-side=right]")).toHaveAttribute("data-image", "out-5");
     await expect(page.locator(".sg-image-preview img")).toBeVisible();
-    await expect(page.locator(".sg-quality-status")).toContainText("Loading original");
+    await expect(page.locator(".sg-quality-status")).toContainText("Preview");
     await page.getByRole("button", { name: "Close Gallery", exact: true }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
   } finally { release(); }
@@ -240,7 +242,7 @@ test("frame-coalesced pan keeps final position and linked reset", async ({ page 
   await page.goto("/proxy/8188/");
   await page.getByRole("button", { name: "Open Gallery", exact: true }).click();
   await page.getByLabel("Pin shiba_00000.png as reference", { exact: true }).click();
-  await expect(page.locator("[data-side=right] .sg-quality-status")).toHaveText("Original");
+  await expect(page.locator("[data-side=right] .sg-quality-status")).toHaveText("High quality WebP");
   const surface = page.locator("[data-side=right] .sg-image-surface");
   const image = page.locator("[data-side=right] .sg-original");
   const before = (await image.boundingBox())!;
@@ -254,4 +256,38 @@ test("frame-coalesced pan keeps final position and linked reset", async ({ page 
   await expect.poll(async () => page.locator("[data-side=left] .sg-original").getAttribute("style")).toBe(await image.getAttribute("style"));
   await page.getByRole("button", { name: "Fit", exact: true }).click();
   await expect.poll(async () => Math.round((await image.boundingBox())!.x)).toBe(Math.round(before.x));
+});
+
+test('bootstrap renders before folder discovery and does not duplicate its first images request', async ({ page }) => {
+  let release!: () => void;
+  const hold = new Promise<void>(resolve => release = resolve);
+  const urls: string[] = [];
+  page.on('request', request => urls.push(request.url()));
+  await page.route('**/shiba-gallery/folders', async route => { await hold; await route.continue(); });
+  try {
+    await page.goto('/proxy/8188/');
+    await page.getByRole('button', {name:'Open Gallery',exact:true}).click();
+    await expect(page.locator('.sg-thumb-button img').first()).toBeVisible();
+    expect(urls.filter(url => url.includes('/bootstrap?'))).toHaveLength(1);
+    expect(urls.filter(url => url.includes('/images?'))).toHaveLength(0);
+  } finally { release(); }
+});
+
+test('normal display avoids originals and fast navigation only fetches the settled image', async ({ page }) => {
+  const urls: string[] = [];
+  page.on('request',request=>urls.push(request.url()));
+  await page.goto('/proxy/8188/');
+  await page.getByRole('button',{name:'Open Gallery',exact:true}).click();
+  await page.getByRole('button',{name:'View shiba_00000.png',exact:true}).click();
+  await expect(page.locator('.sg-quality-status')).toHaveText('High quality WebP');
+  urls.length=0;
+  await page.locator('.sg-view-body').evaluate(el=>{
+    for(let i=0;i<6;i++) el.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true,cancelable:true}));
+  });
+  await expect(page.locator('[data-side=right]')).toHaveAttribute('data-image','out-6');
+  await expect(page.locator('.sg-quality-status')).toHaveText('High quality WebP');
+  expect(urls.filter(url=>url.includes('/original?'))).toEqual([]);
+  expect(urls.filter(url=>/\/out-[1-5]\/(display|metadata)\?/.test(url))).toEqual([]);
+  expect(urls.filter(url=>url.includes('/out-6/display?'))).toHaveLength(1);
+  await expect(page.getByRole('link',{name:'Download right original image'})).toHaveAttribute('href', /\/out-6\/download\?/);
 });

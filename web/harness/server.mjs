@@ -67,23 +67,24 @@ createServer(async (req, res) => {
       });
       return;
     }
-    if (path === base + "/shiba-gallery/images") {
+    if (path === base + "/shiba-gallery/images" || path === base + "/shiba-gallery/bootstrap") {
       const folder = url.searchParams.get("folder_id") || "out";
       const count = folder === "out" ? 450 : folder === "sub" ? 12 : 0;
       const offset = Number(url.searchParams.get("cursor") || 0);
       const limit = Number(url.searchParams.get("limit") || 160);
       const end = Math.min(count, offset + limit);
-      send({
+      const page = {
         images: Array.from({ length: end - offset }, (_, i) =>
           image(i + offset, folder),
         ),
         next_cursor: end < count ? String(end) : null,
         version: "fixture-v1",
-      });
+      };
+      send(path.endsWith("/bootstrap") ? { folder: {id: folder, name: folder === "sub" ? "output/portraits" : "output"}, page } : page);
       return;
     }
     const match = path.match(
-      /\/shiba-gallery\/image\/([^/]+)\/(thumbnail|original|metadata)$/,
+      /\/shiba-gallery\/image\/([^/]+)\/(thumbnail|display|original|download|metadata)$/,
     );
     if (match) {
       const [, id, kind] = match;
@@ -119,6 +120,7 @@ createServer(async (req, res) => {
         });
         return;
       }
+      if (kind === "download") res.setHeader("Content-Disposition", `attachment; filename="shiba_${String(n).padStart(5, "0")}.png"`);
       send(svg(n), "image/svg+xml");
       return;
     }

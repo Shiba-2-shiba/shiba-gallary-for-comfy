@@ -6,6 +6,7 @@ import functools
 from concurrent.futures import ThreadPoolExecutor
 
 from aiohttp import web
+from urllib.parse import quote
 
 from .store import GalleryError, GalleryStore
 
@@ -133,6 +134,14 @@ class GalleryAPI:
         candidates = [value.strip() for value in request.headers.get('If-None-Match', '').split(',')]
         return headers['ETag'] in candidates or '*' in candidates
 
+    async def bootstrap(self, request):
+        try:
+            result = await self.run(self.store.bootstrap, request.query.get('folder_id'),
+                                    limit=self._integer(request, 'limit', 60))
+            return web.json_response(result, headers={'Cache-Control': 'no-store'})
+        except GalleryError as error:
+            return self._error(error)
+
     async def folders(self, request):
         try:
             result = await self.run(self.store.list_folders)
@@ -163,6 +172,17 @@ class GalleryAPI:
         except GalleryError as error:
             return self._error(error)
 
+    async def display(self, request):
+        try:
+            revision = request.query.get('revision')
+            data, current = await self.run(self.store.display, request.match_info['image_id'], revision)
+            headers = self._image_headers(current, revision, variant='-display-1024-q95-icc-v1')
+            if self._not_modified(request, headers):
+                return web.Response(status=304, headers=headers)
+            return web.Response(body=data, content_type='image/webp', headers=headers)
+        except GalleryError as error:
+            return self._error(error)
+
     async def metadata(self, request):
         try:
             result = await self.run(self.store.metadata, request.match_info['image_id'], request.query.get('revision'))
@@ -177,6 +197,12 @@ class GalleryAPI:
         return chunk
 
     async def original(self, request):
+        return await self._stream_original(request)
+
+    async def download(self, request):
+        return await self._stream_original(request, download=True)
+
+    async def _stream_original(self, request, *, download=False):
         source = None
         response = None
         try:
@@ -184,6 +210,16 @@ class GalleryAPI:
             source, current, mime, length = await self.run(self.store.open_original, request.match_info['image_id'], revision,
                                                         _discard_result=lambda result: result[0].close(), _original=True)
             headers = self._image_headers(current, revision)
+            if download:
+                filename = self.store.download_name(request.match_info['image_id'])
+                # RFC 5987 avoids percent-encoded Japanese filenames being used
+                # literally. No filesystem path or unescaped control enters a
+                # response header; older clients receive a safe fallback name.
+                suffix = filename.rsplit('.', 1)[-1].lower()
+                headers['Content-Disposition'] = (
+                    f'attachment; filename="image.{suffix}"; '
+                    f"filename*=UTF-8''{quote(filename, safe='', errors='replace')}"
+                )
             if self._not_modified(request, headers):
                 return web.Response(status=304, headers=headers)
             headers['Content-Type'], headers['Content-Length'] = mime, str(length)
@@ -211,9 +247,12 @@ class GalleryAPI:
                 await self.close_resource(source)
 
     def register(self, routes):
+        routes.get(PREFIX + '/bootstrap')(self.bootstrap)
         routes.get(PREFIX + '/folders')(self.folders)
         routes.get(PREFIX + '/images')(self.images)
         routes.get(PREFIX + '/image/{image_id}/thumbnail')(self.thumbnail)
+        routes.get(PREFIX + '/image/{image_id}/display')(self.display)
+        routes.get(PREFIX + '/image/{image_id}/download')(self.download)
         routes.get(PREFIX + '/image/{image_id}/original')(self.original)
         routes.get(PREFIX + '/image/{image_id}/metadata')(self.metadata)
         return self

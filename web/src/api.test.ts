@@ -61,3 +61,17 @@ it("loads bounded 60-image pages instead of waiting for an entire usual folder",
     globalThis.fetch = previous;
   }
 });
+it('bootstraps a selected folder through the proxy and exposes separate display and original download URLs', async () => {
+  const previous = globalThis.fetch; let requested = '';
+  globalThis.fetch = async (input) => { requested = String(input); return new Response('{}'); };
+  try {
+    const api = new GalleryApi({ apiURL: path => '/prefix' + path });
+    await api.bootstrap('folder&one');
+    const url = new URL(requested, 'https://example.test');
+    expect(url.pathname).toBe('/prefix/shiba-gallery/bootstrap');
+    expect(url.searchParams.get('folder_id')).toBe('folder&one');
+    expect(url.searchParams.get('limit')).toBe('60');
+    expect(api.imageURL({ id:'one',revision:'1' }, 'display')).toContain('/display?');
+    expect(api.imageURL({ id:'one',revision:'1' }, 'download')).toContain('/download?');
+  } finally { globalThis.fetch = previous; }
+});

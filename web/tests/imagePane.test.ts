@@ -38,7 +38,7 @@ it("ignores late error events from the replaced original image", async () => {
   w.unmount();
 });
 
-it("shows a cached preview while prioritizing the original and keeps loading text outside the image", async () => {
+it("shows a cached preview while prioritizing the display image and keeps loading text outside the image", async () => {
   const { thumbnailCache } = await import("../src/thumbnailCache");
   const api = new GalleryApi({ apiURL: (r) => r });
   const image = {
@@ -72,7 +72,7 @@ it("shows a cached preview while prioritizing the original and keeps loading tex
   await w.get(".sg-image-preview img").trigger("load");
   expect(w.get(".sg-image-surface").text()).not.toContain("Loading original");
   expect(w.get(".sg-models").text()).toContain("Preview");
-  expect(w.get(".sg-models").text()).toContain("Loading original…");
+  expect(w.get(".sg-models").text()).toContain("Loading high quality WebP…");
   const original = w.get(".sg-original").element as HTMLImageElement;
   Object.defineProperties(original, {
     naturalWidth: { value: 1024 },
@@ -81,7 +81,7 @@ it("shows a cached preview while prioritizing the original and keeps loading tex
   await w.get(".sg-original").trigger("load");
   await flushPromises();
   expect(w.find(".sg-image-preview").exists()).toBe(false);
-  expect(w.get(".sg-models").text()).toContain("Original");
+  expect(w.get(".sg-models").text()).toContain("High quality WebP");
   w.unmount();
   thumbnailCache.clear();
 });

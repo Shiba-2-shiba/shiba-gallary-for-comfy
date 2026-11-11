@@ -184,6 +184,41 @@ class GalleryStore:
             ordered = sorted(self._folders.items(), key=lambda pair: (pair[1] != '', pair[1]))
             return {'folders': [{'id': key, 'name': relative or 'output'} for key, relative in ordered]}
 
+    def bootstrap(self, folder_id=None, *, limit=60):
+        """Return the selected first page without walking unrelated folders.
+
+        IDs are never decoded into paths. Only a previously discovered folder
+        is eligible; unknown IDs (including IDs saved across restart) fall back
+        to output. The output root itself is always known without discovery.
+        """
+        with self._scan_lock:
+            root_id = self._id('f_', '')
+            self._folders[root_id] = ''
+            selected = folder_id if folder_id in self._folders else root_id
+            relative = self._folders[selected]
+            # Reopening must not trust an old index if the folder was deleted.
+            try:
+                page = self.list_images(selected, limit=limit, refresh=True)
+            except GalleryError as error:
+                if selected == root_id or error.status != 404:
+                    raise
+                self._folders.pop(selected, None)
+                with self._lock:
+                    old = self._indexes.pop(selected, None)
+                    for row in (old[1] if old else []):
+                        self._records.pop(row['id'], None)
+                selected, relative = root_id, ''
+                page = self.list_images(root_id, limit=limit, refresh=True)
+            return {'folder': {'id': selected, 'name': relative or 'output'}, 'page': page}
+
+    def download_name(self, image_id):
+        """Return only a catalogued basename, never a client-supplied path."""
+        with self._lock:
+            row = self._records.get(image_id)
+            if row is None:
+                raise GalleryError(404, 'not_found', 'Image or folder is unavailable')
+            return row['name']
+
     def _dimensions(self, source, suffix):
         if suffix == '.png':
             header = source.read(33)
@@ -317,7 +352,7 @@ class GalleryStore:
         except (ValueError, TypeError, KeyError):
             raise GalleryError(400, 'invalid_cursor', 'The cursor is invalid for this folder') from None
 
-    def list_images(self, folder_id, *, cursor=None, limit=100):
+    def list_images(self, folder_id, *, cursor=None, limit=100, refresh=False):
         if type(limit) is not int or not 1 <= limit <= 200:
             raise GalleryError(400, 'invalid_limit', 'Limit must be between 1 and 200')
         with self._scan_lock:
@@ -332,7 +367,7 @@ class GalleryStore:
                 self._snapshots.move_to_end(snapshot_id)
             else:
                 cached = self._indexes.get(folder_id)
-                _, records, version = cached if cached and now - cached[0] < self.scan_interval else self._scan_folder(folder_id)
+                _, records, version = cached if cached and not refresh and now - cached[0] < self.scan_interval else self._scan_folder(folder_id)
                 # Polling an unchanged list renews the existing snapshot, so an
                 # already-loaded continuation cursor stays usable without
                 # re-requesting every preceding page.
@@ -480,7 +515,30 @@ class GalleryStore:
                 self._write_thumbnail(key, data)
                 return data, current
 
-    def _encode_thumbnail(self, source, current, mime, size):
+    def display(self, image_id, revision=None):
+        """High-quality viewing derivative, not an original-quality claim.
+
+        Share the bounded cache, per-key coalescing and two decoder slots with
+        thumbnails. Distinct format-version keys keep the variants isolated.
+        """
+        source, current, mime, _ = self.open_original(image_id, revision)
+        with source:
+            key = hashlib.sha256(f'{image_id}:{current}:1024:webp-display-q95-icc-v1'.encode()).hexdigest() + '.webp'
+            data = self._read_thumbnail(key)
+            if data is not None:
+                self._check_unchanged(source, current)
+                return data, current
+            with self._thumbnail_generation(key):
+                data = self._read_thumbnail(key)
+                if data is not None:
+                    self._check_unchanged(source, current)
+                    return data, current
+                with self._thumbnail_slots:
+                    data = self._encode_thumbnail(source, current, mime, 1024, display=True)
+                self._write_thumbnail(key, data)
+                return data, current
+
+    def _encode_thumbnail(self, source, current, mime, size, *, display=False):
         from PIL import Image, ImageOps
         from .png_metadata import read_png_text
         try:
@@ -497,12 +555,30 @@ class GalleryStore:
             with Image.open(source) as image:
                 if image.width * image.height > self.max_pixels:
                     raise GalleryError(413, 'image_too_large', 'The image exceeds the pixel limit')
-                image.thumbnail((size, size), Image.Resampling.LANCZOS)
+                # Apply orientation before resizing, and retain an embedded
+                # color profile for the viewing variant. No saved workflow or
+                # EXIF payload is copied into the derivative.
+                profile = image.info.get('icc_profile') if display else None
+                if profile:
+                    # Preserve RGB profiles only when they still describe the
+                    # output channels. Gray/CMYK profiles cannot be copied to
+                    # RGB WebP after mode conversion; retain the original-file
+                    # path rather than silently changing color interpretation.
+                    from PIL import ImageCms
+                    try:
+                        color_space = ImageCms.ImageCmsProfile(io.BytesIO(profile)).profile.xcolor_space.strip()
+                    except (OSError, ValueError, ImageCms.PyCMSError):
+                        color_space = None
+                    if color_space != 'RGB' or image.mode not in ('RGB', 'RGBA', 'P'):
+                        raise GalleryError(422, 'unsupported_color_profile',
+                                           'This color profile requires the original image; use Original or Download')
                 image = ImageOps.exif_transpose(image)
+                image.thumbnail((size, size), Image.Resampling.LANCZOS)
                 if image.mode not in ('RGB', 'RGBA'):
-                    image = image.convert('RGBA' if 'transparency' in image.info else 'RGB')
+                    image = image.convert('RGBA' if 'A' in image.getbands() or 'transparency' in image.info else 'RGB')
                 buffer = io.BytesIO()
-                image.save(buffer, 'WEBP', quality=82, method=3)
+                options = {'icc_profile': profile} if profile else {}
+                image.save(buffer, 'WEBP', quality=95 if display else 82, method=3, **options)
                 data = buffer.getvalue()
             self._check_unchanged(source, current)
         except GalleryError:

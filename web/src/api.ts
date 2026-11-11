@@ -57,6 +57,11 @@ export class GalleryApi {
     }
     return response.json() as Promise<T>;
   }
+  bootstrap(folderId = "", signal?: AbortSignal) {
+    const query = new URLSearchParams({ limit: "60" });
+    if (folderId) query.set("folder_id", folderId);
+    return this.get<{ folder: Folder; page: ImagePage }>("/bootstrap?" + query, signal, "high");
+  }
   folders(signal?: AbortSignal) {
     return this.get<{ folders: Folder[] }>("/folders", signal);
   }
@@ -77,7 +82,7 @@ export class GalleryApi {
   }
   imageURL(
     image: Pick<ImageRecord, "id" | "revision">,
-    kind: "thumbnail" | "original",
+    kind: "thumbnail" | "display" | "original" | "download",
     size?: 256 | 512,
   ) {
     const query = new URLSearchParams({ revision: image.revision });

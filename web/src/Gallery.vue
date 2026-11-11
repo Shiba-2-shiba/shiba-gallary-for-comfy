@@ -38,6 +38,25 @@ const s = reactive(createSession());
 const folders = ref<Folder[]>([]);
 const large = ref(true);
 const showCandidates = ref(false);
+const deferRight = ref(false);
+let settleTimer: ReturnType<typeof setTimeout> | undefined;
+const SETTLE_MS = 250;
+function stopSettling() {
+  clearTimeout(settleTimer);
+  deferRight.value = false;
+}
+function step(delta: number) {
+  const before = s.mode === "single" ? s.currentId : s.rightId;
+  stepCandidate(s, delta);
+  if (before === (s.mode === "single" ? s.currentId : s.rightId)) return;
+  clearTimeout(settleTimer);
+  deferRight.value = true;
+  settleTimer = setTimeout(() => { deferRight.value = false; }, SETTLE_MS);
+}
+function chooseImage(id: string) {
+  stopSettling();
+  if (s.mode === "single") s.currentId = id; else s.rightId = id;
+}
 const neighbors = new NeighborPrefetcher();
 let previousIndex = -1;
 let previousMode = "grid";
@@ -56,6 +75,7 @@ const error = ref("");
 const helper = ref("");
 const searching = ref(false);
 const folderLoading = ref(false);
+let bootstrapReady = false;
 const meta = reactive(new Map<string, NormalizedMetadata>());
 type MetadataOwner = "view" | "search";
 const pending = new Map<string, {
@@ -171,6 +191,7 @@ watch(
 watch(
   () => s.mode,
   async (mode) => {
+    if (mode === "grid") stopSettling();
     const epoch = life;
     await nextTick();
     const overlay = dialog.value;
@@ -268,14 +289,18 @@ function loadVisibleMetadata() {
   for (const image of visibleMetadataImages()) void metadata(image);
 }
 watch(
-  () => [s.mode, left.value?.id, left.value?.revision, right.value?.id, right.value?.revision],
+  () => [s.mode, left.value?.id, left.value?.revision, right.value?.id, right.value?.revision, deferRight.value],
   () => {
     clearTimeout(metadataTimer);
     const visible = visibleMetadataImages();
     releaseMetadata("view", new Set(visible.map(cacheKey)));
-    // Let burst navigation settle. Metadata is secondary to both the current
-    // native original and its immediate compressed preview.
-    if (visible.length) metadataTimer = setTimeout(loadVisibleMetadata, 120);
+    // Keep the pinned reference independent of right-side burst navigation.
+    // Explicit settings bypasses the wait; ordinary selection queues after render.
+    const ready = visible.filter(image => !deferRight.value ||
+      (s.mode === "compare" && image.id === left.value?.id));
+    if (ready.length) metadataTimer = setTimeout(() => {
+      for (const image of ready) void metadata(image);
+    }, 0);
     s.manualMatches = {};
   },
   { flush: "post" },
@@ -284,6 +309,7 @@ watch(() => s.panel, (open) => { if (open) loadVisibleMetadata(); });
 async function open() {
   if (s.open) return;
   life++;
+  bootstrapReady = false;
   folderAbort = new AbortController();
   s.open = true;
   gridPosition.value.scroll = 0;
@@ -294,13 +320,19 @@ async function open() {
   folderLoading.value = true;
   const epoch = life;
   try {
-    const response = await props.api.folders(folderAbort.signal);
+    const response = await props.api.bootstrap(s.folderId, folderAbort.signal);
     if (epoch !== life) return;
-    folders.value = response.folders;
-    const folder =
-      response.folders.find((f) => f.id === s.folderId) ?? response.folders[0];
-    if (folder) await c.selectFolder(folder.id);
-    else error.value = "No output folders are available.";
+    folders.value = [response.folder];
+    c.adoptBootstrap(response.folder.id, response.page);
+    bootstrapReady = true;
+    // Discovery is useful for the selector, but never gates the first page.
+    void props.api.folders(folderAbort.signal).then(result => {
+      if (epoch !== life) return;
+      folders.value = result.folders.some(f => f.id === s.folderId)
+        ? result.folders : [response.folder, ...result.folders];
+    }).catch(() => {
+      if (epoch === life) helper.value = "Folder discovery unavailable. The selected folder remains usable.";
+    });
   } catch (e) {
     if (epoch === life)
       error.value = e instanceof Error ? e.message : "Folders unavailable";
@@ -313,6 +345,7 @@ async function open() {
     }, 5000);
 }
 function close() {
+  stopSettling();
   neighbors.clear();
   life++;
   searchToken++;
@@ -330,6 +363,7 @@ function close() {
   void nextTick(() => launcher.value?.focus());
 }
 async function chooseFolder(event: Event) {
+  stopSettling();
   stopMetadata();
   neighbors.clear();
   gridPosition.value.scroll = 0;
@@ -339,9 +373,12 @@ async function chooseFolder(event: Event) {
   await c.selectFolder((event.target as HTMLSelectElement).value);
 }
 async function refresh() {
-  if (s.open) await c.refresh();
+  if (!s.open) return;
+  if (bootstrapReady) await c.refresh();
+  else { close(); await open(); }
 }
 function view(id: string) {
+  stopSettling();
   showCandidates.value = false;
   s.currentId = id;
   s.mode = "single";
@@ -362,6 +399,7 @@ watch(() => [left.value?.id, left.value?.revision], cancelSearch, {
   flush: "sync",
 });
 function pin(id: string) {
+  stopSettling();
   cancelSearch();
   s.pinned.add(id);
   s.leftId = id;
@@ -389,6 +427,8 @@ function changeScope() {
     s.rightId = candidates(s)[0]?.id ?? null;
 }
 function original(side: "left" | "right") {
+  if (s.linked) { leftPane.value?.requestOriginal(); rightPane.value?.requestOriginal(); }
+  else (side === "left" ? leftPane.value : rightPane.value)?.requestOriginal();
   const transforms = {
     left: { scale: leftPane.value?.originalScale ?? 1, x: 0, y: 0 },
     right: { scale: rightPane.value?.originalScale ?? 1, x: 0, y: 0 },
@@ -396,7 +436,18 @@ function original(side: "left" | "right") {
   if (s.linked) s.transforms = transforms;
   else s.transforms[side] = transforms[side];
 }
+function originalReady(side: "left" | "right") {
+  const pane = side === "left" ? leftPane.value : rightPane.value;
+  s.transforms[side] = { scale: pane?.originalScale ?? 1, x: 0, y: 0 };
+}
+function transform(side: "left" | "right", value: typeof s.transforms.left) {
+  if (s.linked || side === "left") leftPane.value?.cancelOriginalScale();
+  if (s.linked || side === "right") rightPane.value?.cancelOriginalScale();
+  updateTransform(s, side, value);
+}
 function fit() {
+  leftPane.value?.cancelOriginalScale();
+  rightPane.value?.cancelOriginalScale();
   updateTransform(s, "left", { scale: 1, x: 0, y: 0 });
   updateTransform(s, "right", { scale: 1, x: 0, y: 0 });
 }
@@ -475,7 +526,7 @@ function keydown(event: KeyboardEvent) {
     (event.key === "ArrowLeft" || event.key === "ArrowRight")
   ) {
     event.preventDefault();
-    stepCandidate(s, event.key === "ArrowLeft" ? -1 : 1);
+    step(event.key === "ArrowLeft" ? -1 : 1);
   }
 }
 const eventRefresh: EventListener = () => {
@@ -486,6 +537,7 @@ onMounted(() => {
   document.addEventListener("visibilitychange", eventRefresh);
 });
 onBeforeUnmount(() => {
+  stopSettling();
   life++;
   searchToken++;
   neighbors.clear();
@@ -659,7 +711,7 @@ onBeforeUnmount(() => {
           data-action="previous"
           aria-label="Previous image"
           :disabled="choiceIndex <= 0"
-          @click="stepCandidate(s, -1)"
+          @click="step(-1)"
         >
           ← Previous</button
         ><span class="sg-position"
@@ -669,7 +721,7 @@ onBeforeUnmount(() => {
           data-action="next"
           aria-label="Next image"
           :disabled="choiceIndex < 0 || choiceIndex >= choices.length - 1"
-          @click="stepCandidate(s, 1)"
+          @click="step(1)"
         >
           Next →</button
         ><span class="sg-header-spacer"></span
@@ -719,10 +771,12 @@ onBeforeUnmount(() => {
             :models="leftModels"
             :model-status="modelStatus(leftMeta)"
             @original="original('left')"
-            @transform="updateTransform(s, 'left', $event)"
+            @original-ready="originalReady('left')"
+            @transform="transform('left', $event)"
           /><ImagePane
             ref="rightPane"
             :image="right"
+            :defer-heavy="deferRight"
             :unavailable="!!right && s.unavailable.has(right.id)"
             :api="api"
             side="right"
@@ -730,7 +784,8 @@ onBeforeUnmount(() => {
             :models="rightModels"
             :model-status="modelStatus(rightMeta)"
             @original="original('right')"
-            @transform="updateTransform(s, 'right', $event)"
+            @original-ready="originalReady('right')"
+            @transform="transform('right', $event)"
           />
         </div>
         <MetadataPanel
@@ -763,11 +818,7 @@ onBeforeUnmount(() => {
             :aria-pressed="
               image.id === (s.mode === 'single' ? s.currentId : s.rightId)
             "
-            @click="
-              s.mode === 'single'
-                ? (s.currentId = image.id)
-                : (s.rightId = image.id)
-            "
+            @click="chooseImage(image.id)"
           >
             <Thumbnail
               :url="api.imageURL(image, 'thumbnail', 256)"

@@ -1,4 +1,4 @@
-import { GalleryApi } from "./api";
+import { GalleryApi, type ImagePage } from "./api";
 import { reconcileImages, type Session } from "./state";
 export class GalleryController {
   private epoch = 0;
@@ -14,7 +14,7 @@ export class GalleryController {
     readonly session: Session,
     readonly changed: () => void = () => {},
   ) {}
-  async selectFolder(id: string) {
+  private resetFolder(id: string) {
     this.abort.abort();
     this.abort = new AbortController();
     this.epoch++;
@@ -37,7 +37,18 @@ export class GalleryController {
     this.version = "";
     this.firstCursor = null;
     this.error = "";
+    this.loading = false;
+  }
+  async selectFolder(id: string) {
+    this.resetFolder(id);
     await this.refresh();
+  }
+  adoptBootstrap(id: string, page: ImagePage) {
+    this.resetFolder(id);
+    reconcileImages(this.session, page.images, page.next_cursor === null);
+    this.cursor = this.firstCursor = page.next_cursor;
+    this.version = page.version;
+    this.changed();
   }
   async refresh() {
     if (this.working || !this.session.folderId) return;

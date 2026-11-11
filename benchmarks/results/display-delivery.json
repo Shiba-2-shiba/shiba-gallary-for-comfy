@@ -1,0 +1,56 @@
+{
+  "python": "3.14.10",
+  "pillow": "13.0.0",
+  "rounds": 3,
+  "note": "Synthetic random pixels. No network or GPU inference measurement. Lossy derivative is not pixel-identical.",
+  "results": [
+    {
+      "fixture": "square",
+      "source_dimensions": [
+        1024,
+        1024
+      ],
+      "display_dimensions": [
+        1024,
+        1024
+      ],
+      "png_bytes": 3151221,
+      "display_bytes": 1004506,
+      "cold_median_ms": 240.36679699997876,
+      "warm_median_ms": 0.2253979998840805,
+      "original_sha256_unchanged": true
+    },
+    {
+      "fixture": "portrait",
+      "source_dimensions": [
+        832,
+        1248
+      ],
+      "display_dimensions": [
+        683,
+        1024
+      ],
+      "png_bytes": 3120672,
+      "display_bytes": 615772,
+      "cold_median_ms": 160.28210799981935,
+      "warm_median_ms": 0.13799699991068337,
+      "original_sha256_unchanged": true
+    },
+    {
+      "fixture": "small",
+      "source_dimensions": [
+        320,
+        240
+      ],
+      "display_dimensions": [
+        320,
+        240
+      ],
+      "png_bytes": 230988,
+      "display_bytes": 74176,
+      "cold_median_ms": 14.94623300004605,
+      "warm_median_ms": 0.060781000001952634,
+      "original_sha256_unchanged": true
+    }
+  ]
+}

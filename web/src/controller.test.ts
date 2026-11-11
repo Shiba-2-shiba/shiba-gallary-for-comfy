@@ -128,3 +128,14 @@ it('refresh replaces an expired snapshot cursor even when the catalog version is
   expect(c.cursor).toBe('new-third');
   c.dispose();
 });
+it('adopts a bootstrap page without issuing a duplicate images request and keeps pagination', async () => {
+  const requests: string[] = [];
+  const service = { images: async (_folder: string, cursor: string) => {
+    requests.push(cursor); return { images: [img('two')], next_cursor: null, version: 'v1' };
+  }} as unknown as GalleryApi;
+  const s = createSession(); const c = new GalleryController(service, s);
+  c.adoptBootstrap('a', { images: [img('one')], next_cursor: 'next', version: 'v1' });
+  expect(s.images.map(x => x.id)).toEqual(['one']); expect(requests).toEqual([]);
+  await c.loadMore(); expect(requests).toEqual(['next']);
+  expect(s.images.map(x => x.id)).toEqual(['one','two']); c.dispose();
+});
