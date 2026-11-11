@@ -1,0 +1,286 @@
+{
+  "before_50": {
+    "python": "3.14.10",
+    "pillow": "13.0.0",
+    "aiohttp": "3.14.5",
+    "images": 50,
+    "dimensions": [
+      1024,
+      1024
+    ],
+    "thumbnail": 512,
+    "workers": 2,
+    "rounds": [
+      {
+        "cold_cache": {
+          "seconds": 3.5066879910000353,
+          "p50_ms": 137.43124599977818,
+          "p95_ms": 156.96401799959858,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        },
+        "warm_cache": {
+          "seconds": 0.009929464999913762,
+          "p50_ms": 0.16411349997724756,
+          "p95_ms": 0.4842309999730787,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        }
+      },
+      {
+        "cold_cache": {
+          "seconds": 3.403761367999323,
+          "p50_ms": 134.6148880002147,
+          "p95_ms": 145.99187200019514,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        },
+        "warm_cache": {
+          "seconds": 0.007457370999873092,
+          "p50_ms": 0.16505499979757587,
+          "p95_ms": 0.3986219999205787,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        }
+      },
+      {
+        "cold_cache": {
+          "seconds": 3.295311300999856,
+          "p50_ms": 130.54231149999396,
+          "p95_ms": 139.7201469999345,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        },
+        "warm_cache": {
+          "seconds": 0.006829142999777105,
+          "p50_ms": 0.14218999967852142,
+          "p95_ms": 0.2896569994845777,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        }
+      }
+    ],
+    "cache_bookkeeping_1000_seconds": 1.6743591160002325
+  },
+  "after_50": {
+    "python": "3.14.10",
+    "pillow": "13.0.0",
+    "aiohttp": "3.14.5",
+    "images": 50,
+    "dimensions": [
+      1024,
+      1024
+    ],
+    "thumbnail": 512,
+    "workers": 2,
+    "rounds": [
+      {
+        "cold_cache": {
+          "seconds": 1.7841917730002024,
+          "p50_ms": 66.77678200048831,
+          "p95_ms": 85.03611299965996,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        },
+        "warm_cache": {
+          "seconds": 0.00777099199967779,
+          "p50_ms": 0.153792000219255,
+          "p95_ms": 0.33245599934161874,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        }
+      },
+      {
+        "cold_cache": {
+          "seconds": 1.8793907659992328,
+          "p50_ms": 71.85451600025772,
+          "p95_ms": 87.89461400010623,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        },
+        "warm_cache": {
+          "seconds": 0.009208008000314294,
+          "p50_ms": 0.21525949978240533,
+          "p95_ms": 0.3512289995342144,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        }
+      },
+      {
+        "cold_cache": {
+          "seconds": 1.7973833530004413,
+          "p50_ms": 68.8935319999473,
+          "p95_ms": 84.6735160002936,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        },
+        "warm_cache": {
+          "seconds": 0.00841263800066372,
+          "p50_ms": 0.18878950004364015,
+          "p95_ms": 0.4171999999016407,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        }
+      }
+    ],
+    "cache_bookkeeping_1000_seconds": 0.03718292399935308
+  },
+  "before_100": {
+    "python": "3.14.10",
+    "pillow": "13.0.0",
+    "aiohttp": "3.14.5",
+    "images": 100,
+    "dimensions": [
+      1024,
+      1024
+    ],
+    "thumbnail": 512,
+    "workers": 2,
+    "rounds": [
+      {
+        "cold_cache": {
+          "seconds": 6.865391532000103,
+          "p50_ms": 133.2411539997338,
+          "p95_ms": 162.49667600004614,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        },
+        "warm_cache": {
+          "seconds": 0.013472458000251208,
+          "p50_ms": 0.146261000281811,
+          "p95_ms": 0.33007999991241377,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        }
+      },
+      {
+        "cold_cache": {
+          "seconds": 6.8456128380003065,
+          "p50_ms": 134.34703849998186,
+          "p95_ms": 157.03684900017834,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        },
+        "warm_cache": {
+          "seconds": 0.022594906999984232,
+          "p50_ms": 0.17587049978828873,
+          "p95_ms": 1.4114710002104403,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        }
+      },
+      {
+        "cold_cache": {
+          "seconds": 6.9619541399997615,
+          "p50_ms": 133.7954284999796,
+          "p95_ms": 173.95959999976185,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        },
+        "warm_cache": {
+          "seconds": 0.014938471999812464,
+          "p50_ms": 0.17142900014732732,
+          "p95_ms": 0.3183510007147561,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        }
+      }
+    ],
+    "cache_bookkeeping_1000_seconds": 1.739086583000244
+  },
+  "after_100": {
+    "python": "3.14.10",
+    "pillow": "13.0.0",
+    "aiohttp": "3.14.5",
+    "images": 100,
+    "dimensions": [
+      1024,
+      1024
+    ],
+    "thumbnail": 512,
+    "workers": 2,
+    "rounds": [
+      {
+        "cold_cache": {
+          "seconds": 3.5427895720004017,
+          "p50_ms": 67.87018099976194,
+          "p95_ms": 87.3857880005744,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        },
+        "warm_cache": {
+          "seconds": 0.01798189600049227,
+          "p50_ms": 0.21440350019474863,
+          "p95_ms": 0.4038200004288228,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        }
+      },
+      {
+        "cold_cache": {
+          "seconds": 3.415949318999992,
+          "p50_ms": 66.46988000011333,
+          "p95_ms": 80.99335600036284,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        },
+        "warm_cache": {
+          "seconds": 0.014387277999958314,
+          "p50_ms": 0.1451739999538404,
+          "p95_ms": 0.3730729995368165,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        }
+      },
+      {
+        "cold_cache": {
+          "seconds": 3.5902091349998955,
+          "p50_ms": 69.33327600017947,
+          "p95_ms": 89.65749900016817,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        },
+        "warm_cache": {
+          "seconds": 0.019463735000499582,
+          "p50_ms": 0.2277994994983601,
+          "p95_ms": 0.44167699979880126,
+          "sha256": [
+            "0cb65d7d9f6116394f9a2e65bb23e8bf84b8faee1c090a9738bcf787f1779a28"
+          ]
+        }
+      }
+    ],
+    "cache_bookkeeping_1000_seconds": 0.03847119900001417
+  },
+  "baseline_commit": "24b6c3f0260c081928d377189c5455fbcfcd27e9",
+  "environment": {
+    "os": "Linux x86_64 cloud container",
+    "gil_enabled": true,
+    "jit_enabled": false,
+    "logical_cpus_reported": 9,
+    "note": "Synthetic CPU/disk benchmark. No HTTP, browser, GPU inference or Paperspace network measurement."
+  }
+}

@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
@@ -61,7 +61,13 @@ class GalleryStore:
         self._records = {}
         self._snapshots = OrderedDict()
         self._metadata_cache = OrderedDict()
+        # Cache bookkeeping never holds a lock while decoding/encoding pixels.
         self._thumbnail_lock = threading.Lock()
+        self._thumbnail_entries = OrderedDict()
+        self._thumbnail_bytes = 0
+        self._thumbnail_flights = {}
+        # Keep the existing HTTP worker budget: no unbounded CPU/memory growth.
+        self._thumbnail_slots = threading.BoundedSemaphore(2)
         self._temporary = tempfile.TemporaryDirectory(prefix='shiba-gallery-')
         self.cache_dir = Path(self._temporary.name)
         self._root_fd = None
@@ -385,75 +391,125 @@ class GalleryStore:
         if self._revision(os.fstat(source.fileno()), source.fileno()) != revision:
             raise GalleryError(409, 'revision_changed', 'The image changed while it was being read')
 
-    def _write_thumbnail(self, key, data):
-        if len(data) > self.cache_bytes:
-            return
-        temporary = None
+    def _read_thumbnail(self, key):
+        """Read/touch our private LRU without rescanning or modifying mtimes."""
+        with self._thumbnail_lock:
+            size = self._thumbnail_entries.get(key)
+            if size is None:
+                return None
+            try:
+                data = (self.cache_dir / key).read_bytes()
+            except OSError:
+                # Temporary directories may be cleaned externally. Regenerate.
+                self._thumbnail_entries.pop(key)
+                self._thumbnail_bytes -= size
+                return None
+            self._thumbnail_entries.move_to_end(key)
+            return data
+
+    @contextmanager
+    def _thumbnail_generation(self, key):
+        """Serialize one key, not all images; remove idle locks immediately."""
+        with self._thumbnail_lock:
+            flight = self._thumbnail_flights.get(key)
+            if flight is None:
+                flight = [threading.Lock(), 0]
+                self._thumbnail_flights[key] = flight
+            flight[1] += 1
         try:
-            entries = sorted(self.cache_dir.glob('*.webp'), key=lambda path: path.stat().st_mtime_ns)
-            used = sum(path.stat().st_size for path in entries)
-            while entries and used + len(data) > self.cache_bytes:
-                oldest = entries.pop(0)
-                used -= oldest.stat().st_size
-                oldest.unlink()
-            with tempfile.NamedTemporaryFile(dir=self.cache_dir, suffix='.part', delete=False) as output:
-                temporary = Path(output.name)
-                output.write(data)
-            os.replace(temporary, self.cache_dir / key)
-        except OSError:
-            # A full temporary disk must not damage originals or block display.
-            pass
+            with flight[0]:
+                yield
         finally:
-            if temporary is not None:
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass
+            with self._thumbnail_lock:
+                flight[1] -= 1
+                if not flight[1]:
+                    del self._thumbnail_flights[key]
+
+    def _write_thumbnail(self, key, data):
+        # The cache starts empty for each process and is only written here.
+        # Maintain exact byte accounting rather than glob/stat/sort all entries
+        # for every new image (quadratic work as a gallery grows).
+        with self._thumbnail_lock:
+            if len(data) > self.cache_bytes:
+                return
+            temporary = None
+            try:
+                previous = self._thumbnail_entries.get(key, 0)
+                while self._thumbnail_entries and self._thumbnail_bytes - previous + len(data) > self.cache_bytes:
+                    oldest, size = next(iter(self._thumbnail_entries.items()))
+                    (self.cache_dir / oldest).unlink(missing_ok=True)
+                    del self._thumbnail_entries[oldest]
+                    self._thumbnail_bytes -= size
+                    if oldest == key:
+                        previous = 0
+                with tempfile.NamedTemporaryFile(dir=self.cache_dir, suffix='.part', delete=False) as output:
+                    temporary = Path(output.name)
+                    output.write(data)
+                os.replace(temporary, self.cache_dir / key)
+                self._thumbnail_bytes += len(data) - previous
+                self._thumbnail_entries[key] = len(data)
+                self._thumbnail_entries.move_to_end(key)
+            except OSError:
+                # Disk full/cleanup must not damage originals or block display.
+                pass
+            finally:
+                if temporary is not None:
+                    try:
+                        temporary.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
     def thumbnail(self, image_id, size=256, revision=None):
         if type(size) is not int or size not in (256, 512):
             raise GalleryError(400, 'invalid_size', 'Thumbnail size must be 256 or 512')
-        from PIL import Image, ImageOps
-        from .png_metadata import read_png_text
         source, current, mime, _ = self.open_original(image_id, revision)
-        with source, self._thumbnail_lock:
+        with source:
             key = hashlib.sha256(f'{image_id}:{current}:{size}:webp-v1'.encode()).hexdigest() + '.webp'
-            cache = self.cache_dir / key
-            try:
-                data = cache.read_bytes()
-                cache.touch()
+            data = self._read_thumbnail(key)
+            if data is not None:
                 self._check_unchanged(source, current)
                 return data, current
-            except OSError:
-                pass
-            try:
-                if mime == 'image/png':
-                    width, height = self._dimensions(source, '.png')
-                    if width is None or height is None:
-                        raise GalleryError(422, 'invalid_image', 'The image could not be decoded')
-                    if width * height > self.max_pixels:
-                        raise GalleryError(413, 'image_too_large', 'The image exceeds the pixel limit')
-                    _, warnings = read_png_text(source, self.max_metadata_bytes)
-                    if warnings:
-                        raise GalleryError(422, 'invalid_image', 'The image metadata exceeds safety limits or is damaged')
-                source.seek(0)
-                with Image.open(source) as image:
-                    if image.width * image.height > self.max_pixels:
-                        raise GalleryError(413, 'image_too_large', 'The image exceeds the pixel limit')
-                    image.thumbnail((size, size), Image.Resampling.LANCZOS)
-                    image = ImageOps.exif_transpose(image)
-                    if image.mode not in ('RGB', 'RGBA'):
-                        image = image.convert('RGBA' if 'transparency' in image.info else 'RGB')
-                    buffer = io.BytesIO()
-                    image.save(buffer, 'WEBP', quality=82, method=3)
-                    data = buffer.getvalue()
-                self._check_unchanged(source, current)
-            except GalleryError:
-                raise
-            except (OSError, ValueError, Image.DecompressionBombError):
-                raise GalleryError(422, 'invalid_image', 'The image could not be decoded safely') from None
-            self._write_thumbnail(key, data)
-            return data, current
+            with self._thumbnail_generation(key):
+                # A request for the same key may have completed while we waited.
+                data = self._read_thumbnail(key)
+                if data is not None:
+                    self._check_unchanged(source, current)
+                    return data, current
+                with self._thumbnail_slots:
+                    data = self._encode_thumbnail(source, current, mime, size)
+                self._write_thumbnail(key, data)
+                return data, current
+
+    def _encode_thumbnail(self, source, current, mime, size):
+        from PIL import Image, ImageOps
+        from .png_metadata import read_png_text
+        try:
+            if mime == 'image/png':
+                width, height = self._dimensions(source, '.png')
+                if width is None or height is None:
+                    raise GalleryError(422, 'invalid_image', 'The image could not be decoded')
+                if width * height > self.max_pixels:
+                    raise GalleryError(413, 'image_too_large', 'The image exceeds the pixel limit')
+                _, warnings = read_png_text(source, self.max_metadata_bytes)
+                if warnings:
+                    raise GalleryError(422, 'invalid_image', 'The image metadata exceeds safety limits or is damaged')
+            source.seek(0)
+            with Image.open(source) as image:
+                if image.width * image.height > self.max_pixels:
+                    raise GalleryError(413, 'image_too_large', 'The image exceeds the pixel limit')
+                image.thumbnail((size, size), Image.Resampling.LANCZOS)
+                image = ImageOps.exif_transpose(image)
+                if image.mode not in ('RGB', 'RGBA'):
+                    image = image.convert('RGBA' if 'transparency' in image.info else 'RGB')
+                buffer = io.BytesIO()
+                image.save(buffer, 'WEBP', quality=82, method=3)
+                data = buffer.getvalue()
+            self._check_unchanged(source, current)
+        except GalleryError:
+            raise
+        except (OSError, ValueError, Image.DecompressionBombError):
+            raise GalleryError(422, 'invalid_image', 'The image could not be decoded safely') from None
+        return data
 
     def metadata(self, image_id, revision=None):
         from .png_metadata import read_png_text, parse_saved_metadata
@@ -478,3 +534,4 @@ class GalleryStore:
             while len(self._metadata_cache) > 128 or sum(len(value) for value in self._metadata_cache.values()) > 8 * 1024 * 1024:
                 self._metadata_cache.popitem(last=False)
         return result
+

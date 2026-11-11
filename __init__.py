@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import logging
+import sys
+
+if sys.version_info < (3, 14):
+    raise RuntimeError('Shiba Gallery requires Python 3.14 or newer. Use the Python environment running ComfyUI.')
 
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
@@ -27,3 +31,4 @@ def _register():
 
 _register()
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS', 'WEB_DIRECTORY']
+
