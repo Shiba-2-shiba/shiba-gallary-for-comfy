@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import LazyDetails from "./LazyDetails.vue";
 import {
   compareMetadata,
   displayValue,
@@ -101,8 +102,8 @@ function match(event: Event, key: string) {
       <button @click="copy(result.differences)">
         Copy differences (left → right)
       </button>
-      <details class="sg-node-mapping">
-        <summary>Review / change node matching</summary>
+      <LazyDetails class="sg-node-mapping">
+        <template #summary>Review / change node matching</template>
         <p class="sg-muted">
           One-to-one within the same saved source. Auto matches are candidates,
           not proof of workflow identity.
@@ -139,16 +140,16 @@ function match(event: Event, key: string) {
               {{ candidate.id }} · {{ candidate.title || candidate.type }}
             </option>
           </select>
-          <details>
-            <summary>Left saved values</summary>
+          <LazyDetails>
+            <template #summary>Left saved values</template>
             <pre>{{
               displayValue(
                 node.fields.map((f) => ({ name: f.label, value: f.value })),
               )
             }}</pre>
-          </details>
-          <details v-if="rightNode(node.key)">
-            <summary>Right candidate saved values</summary>
+          </LazyDetails>
+          <LazyDetails v-if="rightNode(node.key)">
+            <template #summary>Right candidate saved values</template>
             <pre>{{
               displayValue(
                 rightNode(node.key)?.fields.map((f) => ({
@@ -157,7 +158,7 @@ function match(event: Event, key: string) {
                 })),
               )
             }}</pre>
-          </details>
+          </LazyDetails>
         </label>
         <p
           v-for="item in result.unmatchedLeft"
@@ -174,7 +175,7 @@ function match(event: Event, key: string) {
         >
           Unmatched right {{ item.node.key }}
         </p>
-      </details>
+      </LazyDetails>
       <article
         v-for="difference in result.differences"
         :key="difference.id"
@@ -208,10 +209,10 @@ function match(event: Event, key: string) {
       <p v-for="warning in right.warnings" :key="warning" class="sg-warning">
         {{ warning }}
       </p>
-      <details v-for="node in right.nodes" :key="node.key">
-        <summary>
+      <LazyDetails v-for="node in right.nodes" :key="node.key">
+        <template #summary>
           {{ node.source }} · {{ node.id }} · {{ node.title || node.type }}
-        </summary>
+        </template>
         <div v-for="field in node.fields" :key="field.key" class="sg-field">
           <label
             >{{ field.label }}
@@ -219,10 +220,10 @@ function match(event: Event, key: string) {
           >
           <pre>{{ displayValue(field.value) }}</pre>
         </div>
-      </details></template
+      </LazyDetails></template
     >
-    <details v-if="right">
-      <summary>Original saved JSON (may include prompts)</summary>
+    <LazyDetails v-if="right">
+      <template #summary>Original saved JSON (may include prompts)</template>
       <p class="sg-muted">
         Copied JSON may contain prompt text. Nothing is sent outside this
         ComfyUI server.
@@ -233,6 +234,6 @@ function match(event: Event, key: string) {
         Copy original {{ compare ? "right " : "" }}JSON
       </button>
       <pre>{{ displayValue(right.raw) }}</pre>
-    </details>
+    </LazyDetails>
   </aside>
 </template>

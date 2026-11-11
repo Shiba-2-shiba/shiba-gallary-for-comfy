@@ -209,3 +209,49 @@ test("rapid forward and reverse navigation shows a prepared preview while origin
     await expect(page.getByRole("dialog")).toHaveCount(0);
   } finally { release(); }
 });
+
+test("saved settings prepare collapsed values on demand and retain node matching", async ({ page }) => {
+  await page.goto("/proxy/8188/");
+  await page.getByRole("button", { name: "Open Gallery", exact: true }).click();
+  await page.getByLabel("Pin shiba_00000.png as reference", { exact: true }).click();
+  await page.getByRole("button", { name: "Next image", exact: true }).click();
+  await page.getByRole("button", { name: "Differences", exact: true }).click();
+  const panel = page.getByRole("complementary", { name: "Saved settings" });
+  await expect(panel.locator(".sg-difference").first()).toBeVisible();
+  await expect(panel.locator(".sg-match-row")).toHaveCount(0);
+  const mapping = panel.locator("details").filter({ has: page.locator("summary", { hasText: "Review / change node matching" }) });
+  await mapping.locator(":scope > summary").click();
+  await expect(mapping.locator(".sg-match-row")).toHaveCount(4);
+  const row = mapping.locator(".sg-match-row").first();
+  await expect(row.locator("pre")).toHaveCount(0);
+  await row.getByText("Left saved values", { exact: true }).click();
+  await expect(row.locator("pre").first()).toContainText("shiba-model-b.safetensors");
+  await mapping.locator(":scope > summary").click();
+  await expect(panel.locator(".sg-match-row")).toHaveCount(0);
+  const original = panel.locator("details").filter({ has: page.locator("summary", { hasText: "Original saved JSON" }) });
+  await expect(original.locator("pre")).toHaveCount(0);
+  await original.locator(":scope > summary").click();
+  await expect(original.locator("pre")).toContainText("CheckpointLoaderSimple");
+  await original.locator(":scope > summary").click();
+  await expect(original.locator("pre")).toHaveCount(0);
+});
+
+test("frame-coalesced pan keeps final position and linked reset", async ({ page }) => {
+  await page.goto("/proxy/8188/");
+  await page.getByRole("button", { name: "Open Gallery", exact: true }).click();
+  await page.getByLabel("Pin shiba_00000.png as reference", { exact: true }).click();
+  await expect(page.locator("[data-side=right] .sg-quality-status")).toHaveText("Original");
+  const surface = page.locator("[data-side=right] .sg-image-surface");
+  const image = page.locator("[data-side=right] .sg-original");
+  const before = (await image.boundingBox())!;
+  const box = (await surface.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 90, box.y + box.height / 2 + 45, { steps: 30 });
+  await page.mouse.up();
+  await expect.poll(async () => Math.round((await image.boundingBox())!.x - before.x)).toBe(90);
+  await expect.poll(async () => Math.round((await image.boundingBox())!.y - before.y)).toBe(45);
+  await expect.poll(async () => page.locator("[data-side=left] .sg-original").getAttribute("style")).toBe(await image.getAttribute("style"));
+  await page.getByRole("button", { name: "Fit", exact: true }).click();
+  await expect.poll(async () => Math.round((await image.boundingBox())!.x)).toBe(Math.round(before.x));
+});

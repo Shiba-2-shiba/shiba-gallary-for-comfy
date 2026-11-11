@@ -22,7 +22,49 @@ const loaded = ref(false);
 const failed = ref(false);
 const previewReady = ref(false);
 let observer: ResizeObserver;
-let drag: { x: number; y: number; start: Transform } | null = null;
+let drag: { x: number; y: number; pointerId: number } | null = null;
+let pending: Transform | null = null;
+let lastEmitted: Transform | null = null;
+let frameId: number | null = null;
+let frameBox: DOMRect | null = null;
+function sameTransform(a: Transform, b: Transform) {
+  return a.scale === b.scale && a.x === b.x && a.y === b.y;
+}
+function cancelInput() {
+  if (frameId !== null) cancelAnimationFrame(frameId);
+  frameId = null;
+  frameBox = null;
+  pending = null;
+  lastEmitted = null;
+  drag = null;
+}
+function flushInput() {
+  if (frameId !== null) cancelAnimationFrame(frameId);
+  frameId = null;
+  frameBox = null;
+  const value = pending;
+  pending = null;
+  if (value) {
+    lastEmitted = value;
+    emit("transform", value);
+  }
+}
+function queueTransform(value: Transform) {
+  pending = value;
+  if (frameId === null) frameId = requestAnimationFrame(flushInput);
+}
+function inputTransform() {
+  return pending ?? lastEmitted ?? props.transform;
+}
+watch(
+  () => props.transform,
+  value => {
+    // A parent echo of our emitted value must not discard newer queued input.
+    if (lastEmitted && sameTransform(value, lastEmitted)) lastEmitted = null;
+    else cancelInput();
+  },
+  { deep: true, flush: "sync" },
+);
 const fit = computed(() =>
   Math.min(
     width.value / (natural.value.width || props.image?.width || 1024),
@@ -41,8 +83,9 @@ const style = computed(() => ({
   transform: `translate(-50%,-50%) translate(${props.transform.x * baseWidth.value * props.transform.scale}px,${props.transform.y * baseHeight.value * props.transform.scale}px) scale(${props.transform.scale})`,
 }));
 watch(
-  () => [props.image?.id, props.image?.revision],
+  [() => props.image?.id, () => props.image?.revision],
   () => {
+    cancelInput();
     // Removing a node alone may leave its native image request in flight.
     currentImage.value?.removeAttribute("src");
     loaded.value = false;
@@ -76,36 +119,56 @@ function imageFailed(event: Event) {
 }
 defineExpose({ originalScale: computed(() => 1 / fit.value) });
 function wheel(event: WheelEvent) {
-  const old = props.transform.scale;
+  const current = inputTransform();
+  const old = current.scale;
   const scale = Math.min(
     32,
     Math.max(0.25, old * Math.exp(-event.deltaY * 0.0015)),
   );
-  const box = surface.value!.getBoundingClientRect();
+  const box = frameBox ??= surface.value!.getBoundingClientRect();
   const qx = (event.clientX - box.left - box.width / 2) / baseWidth.value;
   const qy = (event.clientY - box.top - box.height / 2) / baseHeight.value;
-  emit("transform", {
+  queueTransform({
     scale,
-    x: props.transform.x + qx * (1 / scale - 1 / old),
-    y: props.transform.y + qy * (1 / scale - 1 / old),
+    x: current.x + qx * (1 / scale - 1 / old),
+    y: current.y + qy * (1 / scale - 1 / old),
   });
 }
 function down(event: PointerEvent) {
-  if (event.button !== 0) return;
-  drag = { x: event.clientX, y: event.clientY, start: { ...props.transform } };
+  if (event.button !== 0 || drag) return;
+  drag = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
   surface.value?.setPointerCapture(event.pointerId);
 }
 function move(event: PointerEvent) {
-  if (!drag) return;
-  emit("transform", {
-    ...drag.start,
-    x:
-      drag.start.x +
-      (event.clientX - drag.x) / (baseWidth.value * drag.start.scale),
-    y:
-      drag.start.y +
-      (event.clientY - drag.y) / (baseHeight.value * drag.start.scale),
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  const current = inputTransform();
+  queueTransform({
+    ...current,
+    x: current.x + (event.clientX - drag.x) / (baseWidth.value * current.scale),
+    y: current.y + (event.clientY - drag.y) / (baseHeight.value * current.scale),
   });
+  drag.x = event.clientX;
+  drag.y = event.clientY;
+}
+function up(event: PointerEvent) {
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  move(event);
+  drag = null;
+  flushInput();
+}
+function stopDrag(event: PointerEvent) {
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  drag = null;
+  // Cancel/lost-capture coordinates need not be valid. Keep the last move.
+  flushInput();
+}
+function resetTransform() {
+  cancelInput();
+  emit("transform", { scale: 1, x: 0, y: 0 });
+}
+function originalPixels() {
+  cancelInput();
+  emit("original");
 }
 function measure() {
   if (surface.value) {
@@ -119,6 +182,7 @@ onMounted(() => {
   if (surface.value) observer.observe(surface.value);
 });
 onBeforeUnmount(() => {
+  cancelInput();
   currentImage.value?.removeAttribute("src");
   observer?.disconnect();
 });
@@ -131,7 +195,7 @@ onBeforeUnmount(() => {
       ><button
         :aria-label="'Show ' + side + ' original pixels'"
         :disabled="!loaded"
-        @click="emit('original')"
+        @click="originalPixels"
       >
         1:1
       </button>
@@ -146,10 +210,10 @@ onBeforeUnmount(() => {
       @wheel.prevent="wheel"
       @pointerdown="down"
       @pointermove="move"
-      @pointerup="drag = null"
-      @pointercancel="drag = null"
-      @lostpointercapture="drag = null"
-      @dblclick="emit('transform', { scale: 1, x: 0, y: 0 })"
+      @pointerup="up"
+      @pointercancel="stopDrag"
+      @lostpointercapture="stopDrag"
+      @dblclick="resetTransform"
     >
       <div
         v-if="image && !loaded"
