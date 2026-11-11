@@ -514,20 +514,25 @@ class GalleryStore:
     def metadata(self, image_id, revision=None):
         from .png_metadata import read_png_text, parse_saved_metadata
         source, current, mime, _ = self.open_original(image_id, revision)
-        key = (image_id, current)
         with source:
             if mime != 'image/png':
                 return {'status': 'unsupported', 'prompt': None, 'workflow': None,
                         'raw_prompt': None, 'raw_workflow': None, 'warnings': ['Saved ComfyUI settings are supported only in PNG images']}
+            # A fast same-size overwrite can collide at filesystem timestamp
+            # resolution, particularly on Windows. Validate bounded PNG text
+            # before trusting a parsed-settings cache; IDAT pixels are skipped.
+            text, warnings = read_png_text(source, self.max_metadata_bytes)
+            self._check_unchanged(source, current)
+            content_key = hashlib.sha256(json.dumps([text, warnings], sort_keys=True,
+                                                    ensure_ascii=True).encode()).digest()
+            key = (image_id, current, content_key)
             with self._lock:
                 payload = self._metadata_cache.pop(key, None)
                 if payload is not None:
                     self._metadata_cache[key] = payload
             if payload is not None:
                 return json.loads(payload)
-            text, warnings = read_png_text(source, self.max_metadata_bytes)
             result = parse_saved_metadata(text, warnings)
-            self._check_unchanged(source, current)
         payload = json.dumps(result, ensure_ascii=True, allow_nan=False)
         with self._lock:
             self._metadata_cache[key] = payload

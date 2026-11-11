@@ -6,7 +6,7 @@
 
 **Python 3.14以上が必要です。** ComfyUIを実行しているPythonが対象です。Python 3.13以下との互換性は維持しません。CIはLinux・Windowsの通常版CPython 3.14を対象とし、将来のPython版やfree-threaded版での動作は別途確認が必要です。
 
-ComfyUI の `custom_nodes` 内でこのリポジトリを clone し、ComfyUI を実行する Python 環境で `pip install -r requirements.txt` を実行して再起動します。ビルド済み frontend を同梱するため、利用者側の Node.js は不要です。サーバーはLinux/POSIXおよびWindowsの安全なファイルハンドル方式を実装していますが、Windows実機はこの環境では未検証です。非公開リポジトリの clone にはご自身の GitHub 認証が必要です。
+ComfyUI の `custom_nodes` 内でこのリポジトリを clone し、ComfyUI を実行する Python 環境で `pip install -r requirements.txt` を実行して再起動します。ビルド済み frontend を同梱するため、利用者側の Node.js は不要です。サーバーはLinux/POSIXおよびWindowsの安全なファイルハンドル方式を実装していますが、Windows実機はこの環境では未検証です。
 
 画面右側の水色の **Gallery** ボタンから開きます。旧 Gallery は当面無効化してください。同時導入での動作は保証していません。
 
@@ -36,7 +36,7 @@ PythonテストはPython 3.14環境で `python -m pytest tests`。frontendは `c
 
 ## 状態・検証範囲
 
-初回実装です。合成PNGのPythonテスト、frontendの状態・コンポーネントテスト、ビルドとbundle起動検証を実施しました。ブラウザーE2Eは実行環境のChromium起動制限で未実行です。実際の Paperspace 回線、GPU推論中の負荷、ユーザー独自ノードの全組み合わせ、最新ComfyUIとの実機互換性は別途確認が必要です。Vueへの変更だけで高速化できたとは主張しません。サーバー側サムネイル、表示範囲優先読み込み、一時キャッシュを組み合わせます。
+CIではPython 3.14のLinux／Windowsテスト、frontendの状態・コンポーネントテスト、ビルドとbundle検証、合成環境でのChromiumブラウザーテストを行います。実際の Paperspace 回線、GPU推論中の負荷、ユーザー独自ノードの全組み合わせ、最新ComfyUIとの実機互換性は別途確認が必要です。Vueへの変更だけで高速化できたとは主張しません。サーバー側サムネイル、表示範囲優先読み込み、一時キャッシュを組み合わせます。
 
 サムネイル・索引は一時領域のみです。再起動時に作り直します。ファイル順は更新時刻（mtime）の新しい順であり、元の生成時刻を保証しません。詳細な性能計測手順は [検証記録](docs/verification.md) を参照してください。
 

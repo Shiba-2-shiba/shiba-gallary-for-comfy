@@ -358,3 +358,28 @@ def test_literal_reserved_number_tag_is_not_confused_with_an_integer(store):
     result = store.metadata(row['id'])
     assert result['status'] == 'invalid' and result['prompt'] is None
     assert result['raw_prompt'] == raw and result['warnings']
+
+
+
+def test_metadata_cache_does_not_trust_colliding_filesystem_timestamps(store, monkeypatch):
+    """Some filesystems can report the same identity/times for fast rewrites."""
+    path = png(store.root / 'meta-collision.png', metadata={'prompt': {'value': 1}})
+    row = store.list_images(root_id(store))['images'][0]
+    monkeypatch.setattr(store, '_revision', lambda *_: 'same-timestamp-revision')
+    assert store.metadata(row['id'])['prompt'] == {'value': 1}
+    png(path, metadata={'prompt': {'value': 2}})
+    assert store.metadata(row['id'])['prompt'] == {'value': 2}
+
+
+def test_unchanged_metadata_reuses_parse_cache_after_content_check(store, monkeypatch):
+    from gallery_backend import png_metadata
+    png(store.root / 'meta-cached.png', metadata={'prompt': {'value': 1}})
+    row = store.list_images(root_id(store))['images'][0]
+    parse = png_metadata.parse_saved_metadata
+    calls = []
+    def tracked(*args):
+        calls.append(1)
+        return parse(*args)
+    monkeypatch.setattr(png_metadata, 'parse_saved_metadata', tracked)
+    assert store.metadata(row['id']) == store.metadata(row['id'])
+    assert len(calls) == 1

@@ -56,3 +56,7 @@ Two conversions can now consume CPU/memory simultaneously where they were previo
 CI tests Python 3.14 on Linux and Windows. Later Python versions require their own tests. Compare future runtime/dependency updates with fixed inputs, cold/warm caches, the same concurrency and repeated runs; do not use a shared CI runner's tiny timing fluctuation as a hard SLA.
 
 References: [Python 3.14 executor map](https://docs.python.org/3.14/library/concurrent.futures.html#concurrent.futures.Executor.map), [InterpreterPoolExecutor](https://docs.python.org/3.14/library/concurrent.futures.html#interpreterpoolexecutor), [free-threading](https://docs.python.org/3.14/howto/free-threading-python.html).
+
+## Windows metadata cache correctness
+
+The Python 3.14 Windows CI exposed a stale parsed-metadata result after a rapid same-size overwrite. A deterministic regression reproduces the failure by holding the filesystem revision constant. Metadata requests now read the bounded PNG text chunks (skipping pixel data), check the opened source, and include text plus warnings in the parsed-settings cache key. This trades a small read/hash cost for correctness; unchanged text still reuses parsing results. This is not presented as a Python 3.14 language defect or a general solution to every filesystem timestamp collision in image/HTTP caches.
