@@ -175,9 +175,10 @@ for (const index of [0, 1]) {
     await page.getByRole("button", { name: "Hide candidates", exact: true }).click();
     await page.getByRole("button", { name: "Pin as reference", exact: true }).click();
     await expect(page.locator("[data-side=right] .sg-quality-status")).toHaveText("Original");
-    const comparison = (await original.boundingBox())!;
-    expect(single.height).toBeGreaterThan(comparison.height * 1.1);
-    expect(single.width).toBeGreaterThan(comparison.width * 1.1);
+    // The already-loaded right pane survives mode switching. Its Original
+    // status can precede ResizeObserver's new comparison layout measurement.
+    await expect.poll(async () => single.height / (await original.boundingBox())!.height).toBeGreaterThan(1.1);
+    await expect.poll(async () => single.width / (await original.boundingBox())!.width).toBeGreaterThan(1.1);
   });
 }
 

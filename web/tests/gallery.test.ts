@@ -400,3 +400,49 @@ it("does not restart saved-text search requests after the gallery component is u
   w.unmount(); await flushPromises();
   expect(requested).toHaveLength(2);
 });
+
+it("keeps real keyboard navigation inside the gallery after view, compare, and grid transitions", async () => {
+  const w = fixture();
+  const press = async (key: string) => {
+    document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    await w.vm.$nextTick();
+  };
+  try {
+    await w.get("[data-action=open]").trigger("click"); await flushPromises();
+    const view = w.findAll<HTMLButtonElement>("[data-action=view]")[0];
+    view.element.focus(); await view.trigger("click"); await flushPromises();
+    await press("ArrowRight");
+    expect(w.get("[data-side=right]").attributes("data-image")).toBe("two");
+    expect(document.activeElement).toBe(w.get(".sg-view-body").element);
+    const pin = w.get<HTMLButtonElement>("[data-action=pin]");
+    pin.element.focus(); await pin.trigger("click"); await flushPromises();
+    await press("ArrowRight");
+    expect(w.get("[data-side=left]").attributes("data-image")).toBe("two");
+    expect(w.get("[data-side=right]").attributes("data-image")).toBe("three");
+    await press("Escape"); await flushPromises();
+    expect(document.activeElement?.matches("[data-action=view]")).toBe(true);
+    const compare = w.get<HTMLButtonElement>("[data-action=compare]");
+    compare.element.focus(); await compare.trigger("click"); await flushPromises();
+    expect(document.activeElement).toBe(w.get(".sg-view-body").element);
+    await press("ArrowRight");
+    expect(w.get("[data-side=right]").attributes("data-image")).toBe("three");
+    await w.get("[data-action=close]").trigger("click"); await flushPromises();
+    expect(document.activeElement).toBe(w.get("[data-action=open]").element);
+  } finally { w.unmount(); }
+});
+
+it("preserves surviving select focus and its arrow-key behavior during a folder mode change", async () => {
+  const w = fixture();
+  try {
+    await w.get("[data-action=open]").trigger("click"); await flushPromises();
+    await w.findAll("[data-action=view]")[0].trigger("click"); await flushPromises();
+    const folder = w.get<HTMLSelectElement>('[aria-label="Output folder"]');
+    folder.element.focus();
+    folder.element.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
+    await w.vm.$nextTick();
+    expect(w.get("[data-side=right]").attributes("data-image")).toBe("one");
+    await folder.setValue("sub"); await flushPromises();
+    expect(document.activeElement).toBe(folder.element);
+    expect(w.find("[data-testid=image-grid]").exists()).toBe(true);
+  } finally { w.unmount(); }
+});

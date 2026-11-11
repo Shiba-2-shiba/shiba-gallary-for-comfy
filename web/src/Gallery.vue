@@ -43,6 +43,7 @@ let previousIndex = -1;
 let previousMode = "grid";
 let direction: 1 | -1 = 1;
 const dialog = ref<HTMLDialogElement>();
+const viewer = ref<HTMLElement>();
 const leftPane = ref<InstanceType<typeof ImagePane>>();
 const rightPane = ref<InstanceType<typeof ImagePane>>();
 const launcher = ref<HTMLButtonElement>();
@@ -165,6 +166,24 @@ watch(
         selected.offsetLeft,
         selected.offsetWidth,
       );
+  },
+);
+watch(
+  () => s.mode,
+  async (mode) => {
+    const epoch = life;
+    await nextTick();
+    const overlay = dialog.value;
+    if (!s.open || epoch !== life || mode !== s.mode || !overlay) return;
+    // The control that opened this mode may have been removed. Restore focus
+    // inside the dialog so its keyboard handler receives the next arrow key.
+    // Leave surviving controls (especially selects/inputs) alone.
+    if (overlay.contains(document.activeElement)) return;
+    const target = mode === "grid"
+      ? overlay.querySelector<HTMLElement>("[data-action=view]")
+      : viewer.value;
+    (target ?? overlay.querySelector<HTMLElement>("[data-action=close]"))
+      ?.focus({ preventScroll: true });
   },
 );
 function modelStatus(value: NormalizedMetadata | undefined) {
@@ -678,7 +697,13 @@ onBeforeUnmount(() => {
           {{ s.mode === "compare" ? "Differences" : "Settings" }}
         </button>
       </div>
-      <div class="sg-view-body">
+      <div
+        ref="viewer"
+        class="sg-view-body"
+        role="region"
+        :aria-label="s.mode === 'compare' ? 'Image comparison' : 'Image viewer'"
+        tabindex="-1"
+      >
         <div
           class="sg-image-pair"
           :class="{ 'sg-single': s.mode === 'single' }"
