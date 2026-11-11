@@ -182,15 +182,17 @@ for (const index of [0, 1]) {
 }
 
 test("rapid forward and reverse navigation shows a prepared preview while originals are held", async ({ page }) => {
+  const prepared: string[] = [];
+  // Large grid cards already fetch/cache 512px previews. Observe before opening
+  // the grid: a single-view cache hit correctly produces no new request.
+  page.on("requestfinished", (request) => {
+    if (request.url().includes("/thumbnail?") && request.url().includes("size=512")) prepared.push(request.url());
+  });
   await page.goto("/proxy/8188/");
   await page.getByRole("button", { name: "Open Gallery", exact: true }).click();
   await expect(page.locator(".sg-thumb-button img").first()).toBeVisible();
   let release!: () => void;
   const pending = new Promise<void>((resolve) => (release = resolve));
-  const prepared: string[] = [];
-  page.on("requestfinished", (request) => {
-    if (request.url().includes("/thumbnail?") && request.url().includes("size=512")) prepared.push(request.url());
-  });
   await page.route("**/original?**", async (route) => { await pending; await route.continue(); });
   try {
     await page.getByRole("button", { name: "View shiba_00000.png", exact: true }).click();
