@@ -1,0 +1,224 @@
+"""aiohttp routes shared by ComfyUI and the local synthetic test harness."""
+from __future__ import annotations
+
+import asyncio
+import functools
+from concurrent.futures import ThreadPoolExecutor
+
+from aiohttp import web
+
+from .store import GalleryError, GalleryStore
+
+PREFIX = '/shiba-gallery'
+
+
+class GalleryAPI:
+    def __init__(self, store: GalleryStore, *, workers=2, timeout=15.0, queue_timeout=3.0):
+        self.store = store
+        self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix='shiba-gallery')
+        self._slots = asyncio.Semaphore(workers)
+        self._timeout, self._queue_timeout = timeout, queue_timeout
+        self._closed = False
+        self._resource_work = {}
+        self._pending_closes = set()
+        self._cleanups = set()
+
+    def _schedule_cleanup(self, function, *args):
+        future = asyncio.get_running_loop().run_in_executor(None, functools.partial(function, *args))
+        self._cleanups.add(future)
+        def finished(done):
+            self._cleanups.discard(done)
+            if not done.cancelled():
+                done.exception()
+        future.add_done_callback(finished)
+
+    async def close_resource(self, source):
+        pending = self._resource_work.get(source)
+        if pending is not None and not pending.done():
+            self._pending_closes.add(source)
+        else:
+            await asyncio.to_thread(source.close)
+
+    async def run(self, function, *args, _discard_result=None, _resource=None, **kwargs):
+        """Keep worker count AND submitted work bounded, even after timeouts.
+
+        Python cannot kill an executing thread. A timed-out operation retains
+        its slot until it really finishes, so retries cannot create an
+        unbounded background queue or bypass the CPU/concurrency limit.
+        """
+        if self._closed:
+            raise GalleryError(503, 'unavailable', 'The gallery is shutting down')
+        try:
+            await asyncio.wait_for(self._slots.acquire(), timeout=self._queue_timeout)
+        except asyncio.TimeoutError:
+            raise GalleryError(503, 'busy', 'The gallery is busy; try again shortly') from None
+        loop = asyncio.get_running_loop()
+        try:
+            future = loop.run_in_executor(self._pool, functools.partial(function, *args, **kwargs))
+        except BaseException:
+            self._slots.release()
+            raise
+        abandoned, cleaned = False, False
+        if _resource is not None:
+            self._resource_work[_resource] = future
+
+        def discard_if_needed(done):
+            nonlocal cleaned
+            if abandoned and _discard_result is not None and not cleaned and done.done() and not done.cancelled():
+                if done.exception() is None:
+                    cleaned = True
+                    self._schedule_cleanup(_discard_result, done.result())
+
+        def finished(done):
+            self._slots.release()
+            if not done.cancelled():
+                done.exception()  # Consume late failures after HTTP cancellation.
+            if _resource is not None:
+                self._resource_work.pop(_resource, None)
+                if _resource in self._pending_closes:
+                    self._pending_closes.remove(_resource)
+                    self._schedule_cleanup(_resource.close)
+            discard_if_needed(done)
+
+        future.add_done_callback(finished)
+        try:
+            return await asyncio.wait_for(asyncio.shield(future), timeout=self._timeout)
+        except (asyncio.TimeoutError, asyncio.CancelledError) as error:
+            abandoned = True
+            discard_if_needed(future)
+            if isinstance(error, asyncio.CancelledError):
+                raise
+            raise GalleryError(503, 'timeout', 'The gallery operation took too long; try again shortly') from None
+
+    async def close(self, _app=None):
+        if self._closed:
+            return
+        self._closed = True
+        await asyncio.to_thread(self._pool.shutdown, wait=True, cancel_futures=True)
+        if self._cleanups:
+            await asyncio.gather(*self._cleanups, return_exceptions=True)
+        await asyncio.to_thread(self.store.close)
+
+    @staticmethod
+    def _error(error):
+        headers = {'Cache-Control': 'no-store'}
+        if error.status in (425, 503):
+            headers['Retry-After'] = '3'
+        return web.json_response({'error': {'code': error.code, 'message': str(error)}}, status=error.status, headers=headers)
+
+    @staticmethod
+    def _integer(request, name, default):
+        try:
+            return int(request.query.get(name, str(default)))
+        except (ValueError, TypeError):
+            raise GalleryError(400, 'invalid_' + name, name.capitalize() + ' must be an integer') from None
+
+    @staticmethod
+    def _image_headers(revision, requested, *, variant=''):
+        return {'ETag': '"' + revision + variant + '"',
+                'Cache-Control': 'private, max-age=31536000, immutable' if requested else 'no-cache',
+                'X-Content-Type-Options': 'nosniff'}
+
+    @staticmethod
+    def _not_modified(request, headers):
+        candidates = [value.strip() for value in request.headers.get('If-None-Match', '').split(',')]
+        return headers['ETag'] in candidates or '*' in candidates
+
+    async def folders(self, request):
+        try:
+            result = await self.run(self.store.list_folders)
+            return web.json_response(result, headers={'Cache-Control': 'no-store'})
+        except GalleryError as error:
+            return self._error(error)
+
+    async def images(self, request):
+        try:
+            folder = request.query.get('folder_id')
+            if not folder:
+                raise GalleryError(400, 'missing_folder', 'Choose an output folder')
+            result = await self.run(self.store.list_images, folder,
+                                    cursor=request.query.get('cursor'), limit=self._integer(request, 'limit', 100))
+            return web.json_response(result, headers={'Cache-Control': 'no-store'})
+        except GalleryError as error:
+            return self._error(error)
+
+    async def thumbnail(self, request):
+        try:
+            size = self._integer(request, 'size', 256)
+            revision = request.query.get('revision')
+            data, current = await self.run(self.store.thumbnail, request.match_info['image_id'], size, revision)
+            headers = self._image_headers(current, revision, variant=f'-thumbnail-{size}')
+            if self._not_modified(request, headers):
+                return web.Response(status=304, headers=headers)
+            return web.Response(body=data, content_type='image/webp', headers=headers)
+        except GalleryError as error:
+            return self._error(error)
+
+    async def metadata(self, request):
+        try:
+            result = await self.run(self.store.metadata, request.match_info['image_id'], request.query.get('revision'))
+            return web.json_response(result, headers={'Cache-Control': 'no-store'})
+        except GalleryError as error:
+            return self._error(error)
+
+    def _read_original_chunk(self, source, revision):
+        self.store._check_unchanged(source, revision)
+        chunk = source.read(64 * 1024)
+        self.store._check_unchanged(source, revision)
+        return chunk
+
+    async def original(self, request):
+        source = None
+        response = None
+        try:
+            revision = request.query.get('revision')
+            source, current, mime, length = await self.run(self.store.open_original, request.match_info['image_id'], revision,
+                                                        _discard_result=lambda result: result[0].close())
+            headers = self._image_headers(current, revision)
+            if self._not_modified(request, headers):
+                return web.Response(status=304, headers=headers)
+            headers['Content-Type'], headers['Content-Length'] = mime, str(length)
+            response = web.StreamResponse(headers=headers)
+            await response.prepare(request)
+            if request.method != 'HEAD':
+                while True:
+                    data = await self.run(self._read_original_chunk, source, current, _resource=source)
+                    if not data:
+                        break
+                    await response.write(data)
+            await response.write_eof()
+            return response
+        except GalleryError as error:
+            if response is not None and response.prepared:
+                # In-place writes after headers must never produce a successful,
+                # cacheable mixed-version body. An interrupted stream is retried
+                # by an explicit client action with a refreshed revision.
+                if request.transport is not None:
+                    request.transport.close()
+                return response
+            return self._error(error)
+        finally:
+            if source is not None:
+                await self.close_resource(source)
+
+    def register(self, routes):
+        routes.get(PREFIX + '/folders')(self.folders)
+        routes.get(PREFIX + '/images')(self.images)
+        routes.get(PREFIX + '/image/{image_id}/thumbnail')(self.thumbnail)
+        routes.get(PREFIX + '/image/{image_id}/original')(self.original)
+        routes.get(PREFIX + '/image/{image_id}/metadata')(self.metadata)
+        return self
+
+
+def register_routes(routes, output_root, **store_options):
+    return GalleryAPI(GalleryStore(output_root, **store_options)).register(routes)
+
+
+def create_app(output_root, **store_options):
+    """Small standalone API app, also used by tests and synthetic UI demos."""
+    app = web.Application()
+    routes = web.RouteTableDef()
+    api = register_routes(routes, output_root, **store_options)
+    app.add_routes(routes)
+    app.on_cleanup.append(api.close)
+    return app
