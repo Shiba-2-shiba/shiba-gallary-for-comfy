@@ -4,6 +4,7 @@ export class GalleryController {
   private epoch = 0;
   private abort = new AbortController();
   private working = false;
+  private firstCursor: string | null = null;
   cursor: string | null = null;
   error = "";
   loading = false;
@@ -22,6 +23,7 @@ export class GalleryController {
     this.session.images = [];
     this.session.records.clear();
     this.session.checked.clear();
+    this.session.pinned.clear();
     this.session.unavailable.clear();
     this.session.currentId = null;
     this.session.leftId = null;
@@ -32,6 +34,8 @@ export class GalleryController {
     this.session.scope = "folder";
     this.session.promptIds.clear();
     this.cursor = null;
+    this.version = "";
+    this.firstCursor = null;
     this.error = "";
     await this.refresh();
   }
@@ -45,6 +49,8 @@ export class GalleryController {
       const count = Math.max(1, this.session.images.length);
       const list = [];
       let cursor: string | null = null;
+      let nextVersion = this.version;
+      let nextFirstCursor: string | null = null;
       do {
         const page = await this.api.images(
           this.session.folderId,
@@ -52,12 +58,25 @@ export class GalleryController {
           this.abort.signal,
         );
         if (epoch !== this.epoch) return;
+        if (cursor === null && this.session.images.length > 0 &&
+            page.version === this.version && page.next_cursor === this.firstCursor &&
+            page.images.every((image, index) =>
+              this.session.images[index]?.id === image.id &&
+              this.session.images[index]?.revision === image.revision)) {
+          // The backend renews the unchanged snapshot. Keep the loaded range,
+          // continuation cursor and object identity instead of refetching it.
+          this.error = "";
+          return;
+        }
+        if (cursor === null) nextFirstCursor = page.next_cursor;
         list.push(...page.images);
         cursor = page.next_cursor;
-        this.version = page.version;
+        nextVersion = page.version;
       } while (cursor && list.length < count);
       reconcileImages(this.session, list, cursor === null);
       this.cursor = cursor;
+      this.version = nextVersion;
+      this.firstCursor = nextFirstCursor;
       this.error = "";
     } catch (error) {
       if (epoch === this.epoch && !this.abort.signal.aborted)

@@ -13,6 +13,7 @@ import Thumbnail from "./Thumbnail.vue";
 const props = defineProps<{
   images: ImageRecord[];
   checked: Set<string>;
+  pinned: Set<string>;
   large: boolean;
   api: GalleryApi;
   hasMore: boolean;
@@ -142,10 +143,11 @@ defineExpose({
               Compare</label
             ><button
               class="sg-pin"
+              :class="{ 'sg-pinned': pinned.has(image.id) }"
               :aria-label="'Pin ' + image.name + ' as reference'"
               @click="emit('pin', image.id)"
             >
-              Pin
+              {{ pinned.has(image.id) ? "Pinned" : "Pin" }}
             </button>
           </div>
         </article>

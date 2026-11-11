@@ -18,6 +18,7 @@ export interface Session {
   images: ImageRecord[];
   records: Map<string, ImageRecord>;
   checked: Set<string>;
+  pinned: Set<string>;
   unavailable: Set<string>;
   mode: "grid" | "single" | "compare";
   currentId: string | null;
@@ -38,6 +39,7 @@ export function createSession(): Session {
     images: [],
     records: new Map(),
     checked: new Set(),
+    pinned: new Set(),
     unavailable: new Set(),
     mode: "grid",
     currentId: null,
@@ -59,6 +61,7 @@ export function reconcileImages(
   const keep = new Set([
     ...images.map((i) => i.id),
     ...s.checked,
+    ...s.pinned,
     s.currentId,
     s.leftId,
     s.rightId,
@@ -77,9 +80,9 @@ export function reconcileImages(
 export function candidates(s: Session): ImageRecord[] {
   return s.images.filter(
     (i) =>
-      i.id !== s.leftId &&
-      (s.scope === "folder" ||
-        (s.scope === "checked" ? s.checked : s.promptIds).has(i.id)),
+      i.id === s.leftId ||
+      s.scope === "folder" ||
+      (s.scope === "checked" ? s.checked : s.promptIds).has(i.id),
   );
 }
 export function stepCandidate(s: Session, delta: number) {
@@ -92,6 +95,7 @@ export function stepCandidate(s: Session, delta: number) {
 export function closeSession(s: Session) {
   s.open = false;
   s.checked.clear();
+  s.pinned.clear();
   s.unavailable.clear();
   s.currentId = null;
   s.leftId = null;

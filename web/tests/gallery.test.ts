@@ -13,6 +13,8 @@ const image = (id: string) => ({
 });
 const api = new GalleryApi({ apiURL: (route) => route });
 beforeAll(() => {
+  URL.createObjectURL = () => "blob:test-preview";
+  URL.revokeObjectURL = () => {};
   globalThis.ResizeObserver = class {
     observe() {}
     unobserve() {}
@@ -84,10 +86,10 @@ it("opens original with model outside image, pins reference and switches only th
   await w.get("[data-action=pin]").trigger("click");
   await flushPromises();
   expect(w.get("[data-side=left]").attributes("data-image")).toBe("one");
-  expect(w.get("[data-side=right]").attributes("data-image")).toBe("two");
+  expect(w.get("[data-side=right]").attributes("data-image")).toBe("one");
   await w.get("[data-action=next]").trigger("click");
   expect(w.get("[data-side=left]").attributes("data-image")).toBe("one");
-  expect(w.get("[data-side=right]").attributes("data-image")).toBe("three");
+  expect(w.get("[data-side=right]").attributes("data-image")).toBe("two");
   w.unmount();
 });
 it("does not apply a previous reference prompt search after pinning another reference", async () => {
@@ -182,5 +184,60 @@ it("restores the grid viewport after viewing an image", async () => {
   await w.get("[data-action=grid]").trigger("click");
   await flushPromises();
   expect(w.get("[data-testid=image-grid]").element.scrollTop).toBe(656);
+  w.unmount();
+});
+
+it("starts with large thumbnails and restores identical sides when choosing a pinned or checked reference", async () => {
+  const w = fixture();
+  await w.get("[data-action=open]").trigger("click");
+  await flushPromises();
+  expect(
+    w
+      .findAll("button")
+      .find((b) => b.text() === "Large")!
+      .attributes("aria-pressed"),
+  ).toBe("true");
+  await w.findAll("input[type=checkbox]")[1].setValue(true);
+  await w.findAll(".sg-pin")[0].trigger("click");
+  await flushPromises();
+  expect(
+    w
+      .get('[aria-label="Reference image"]')
+      .findAll("option")
+      .map((o) => o.attributes("value")),
+  ).toEqual(["one", "two"]);
+  await w.get("[data-action=next]").trigger("click");
+  await w.get('[aria-label="Reference image"]').setValue("two");
+  await flushPromises();
+  expect(w.get("[data-side=left]").attributes("data-image")).toBe("two");
+  expect(w.get("[data-side=right]").attributes("data-image")).toBe("two");
+  await w.get("[data-action=grid]").trigger("click");
+  await w.findAll(".sg-pin")[2].trigger("click");
+  await w.get('[aria-label="Reference image"]').setValue("one");
+  expect(w.get("[data-side=left]").attributes("data-image")).toBe("one");
+  expect(w.get("[data-side=right]").attributes("data-image")).toBe("one");
+  await w.get("[data-action=close]").trigger("click");
+  await w.get("[data-action=open]").trigger("click");
+  await flushPromises();
+  expect((w.vm as any).s.pinned.size).toBe(0);
+  w.unmount();
+});
+
+it("inserts the original image before requesting nonessential metadata", async () => {
+  const w = fixture();
+  const previous = fetch;
+  let imagePresent = false;
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, options?: RequestInit) => {
+    if (String(input).includes("/metadata"))
+      imagePresent = !!document.querySelector(
+        "[data-side=right] img.sg-original",
+      );
+    return previous(input, options);
+  });
+  await w.get("[data-action=open]").trigger("click");
+  await flushPromises();
+  await w.findAll("[data-action=view]")[0].trigger("click");
+  await flushPromises();
+  expect(imagePresent).toBe(true);
   w.unmount();
 });

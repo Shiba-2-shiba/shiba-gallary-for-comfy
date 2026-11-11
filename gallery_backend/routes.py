@@ -13,10 +13,14 @@ PREFIX = '/shiba-gallery'
 
 
 class GalleryAPI:
-    def __init__(self, store: GalleryStore, *, workers=2, timeout=15.0, queue_timeout=3.0):
+    def __init__(self, store: GalleryStore, *, workers=2, original_workers=2, timeout=15.0, queue_timeout=3.0):
         self.store = store
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix='shiba-gallery')
         self._slots = asyncio.Semaphore(workers)
+        # Image selection must not queue behind thumbnail decoding or catalog
+        # refreshes. Keep its file I/O separately bounded, not unbounded.
+        self._original_pool = ThreadPoolExecutor(max_workers=original_workers, thread_name_prefix='shiba-gallery-original')
+        self._original_slots = asyncio.Semaphore(original_workers)
         self._timeout, self._queue_timeout = timeout, queue_timeout
         self._closed = False
         self._resource_work = {}
@@ -39,7 +43,7 @@ class GalleryAPI:
         else:
             await asyncio.to_thread(source.close)
 
-    async def run(self, function, *args, _discard_result=None, _resource=None, **kwargs):
+    async def run(self, function, *args, _discard_result=None, _resource=None, _original=False, **kwargs):
         """Keep worker count AND submitted work bounded, even after timeouts.
 
         Python cannot kill an executing thread. A timed-out operation retains
@@ -48,15 +52,17 @@ class GalleryAPI:
         """
         if self._closed:
             raise GalleryError(503, 'unavailable', 'The gallery is shutting down')
+        slots = self._original_slots if _original else self._slots
+        pool = self._original_pool if _original else self._pool
         try:
-            await asyncio.wait_for(self._slots.acquire(), timeout=self._queue_timeout)
+            await asyncio.wait_for(slots.acquire(), timeout=self._queue_timeout)
         except asyncio.TimeoutError:
             raise GalleryError(503, 'busy', 'The gallery is busy; try again shortly') from None
         loop = asyncio.get_running_loop()
         try:
-            future = loop.run_in_executor(self._pool, functools.partial(function, *args, **kwargs))
+            future = loop.run_in_executor(pool, functools.partial(function, *args, **kwargs))
         except BaseException:
-            self._slots.release()
+            slots.release()
             raise
         abandoned, cleaned = False, False
         if _resource is not None:
@@ -70,7 +76,7 @@ class GalleryAPI:
                     self._schedule_cleanup(_discard_result, done.result())
 
         def finished(done):
-            self._slots.release()
+            slots.release()
             if not done.cancelled():
                 done.exception()  # Consume late failures after HTTP cancellation.
             if _resource is not None:
@@ -94,7 +100,10 @@ class GalleryAPI:
         if self._closed:
             return
         self._closed = True
-        await asyncio.to_thread(self._pool.shutdown, wait=True, cancel_futures=True)
+        await asyncio.gather(
+            asyncio.to_thread(self._pool.shutdown, wait=True, cancel_futures=True),
+            asyncio.to_thread(self._original_pool.shutdown, wait=True, cancel_futures=True),
+        )
         if self._cleanups:
             await asyncio.gather(*self._cleanups, return_exceptions=True)
         await asyncio.to_thread(self.store.close)
@@ -163,7 +172,7 @@ class GalleryAPI:
 
     def _read_original_chunk(self, source, revision):
         self.store._check_unchanged(source, revision)
-        chunk = source.read(64 * 1024)
+        chunk = source.read(1024 * 1024)
         self.store._check_unchanged(source, revision)
         return chunk
 
@@ -173,7 +182,7 @@ class GalleryAPI:
         try:
             revision = request.query.get('revision')
             source, current, mime, length = await self.run(self.store.open_original, request.match_info['image_id'], revision,
-                                                        _discard_result=lambda result: result[0].close())
+                                                        _discard_result=lambda result: result[0].close(), _original=True)
             headers = self._image_headers(current, revision)
             if self._not_modified(request, headers):
                 return web.Response(status=304, headers=headers)
@@ -182,7 +191,7 @@ class GalleryAPI:
             await response.prepare(request)
             if request.method != 'HEAD':
                 while True:
-                    data = await self.run(self._read_original_chunk, source, current, _resource=source)
+                    data = await self.run(self._read_original_chunk, source, current, _resource=source, _original=True)
                     if not data:
                         break
                     await response.write(data)

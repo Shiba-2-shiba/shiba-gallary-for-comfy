@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict
+from contextlib import closing
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
@@ -52,6 +53,8 @@ class GalleryStore:
         self._secret = secrets.token_bytes(32)
         self._boot = secrets.token_hex(16)
         self._lock = threading.RLock()
+        # Serialize catalog updates without blocking an already-selected image.
+        self._scan_lock = threading.RLock()
         self._folders = {}
         self._folders_scanned = float('-inf')
         self._indexes = OrderedDict()
@@ -149,7 +152,7 @@ class GalleryStore:
             os.close(handle)
 
     def list_folders(self):
-        with self._lock:
+        with self._scan_lock:
             now = time.monotonic()
             if now - self._folders_scanned >= self.scan_interval:
                 pending = ['']
@@ -193,55 +196,98 @@ class GalleryStore:
         except (OSError, ValueError, Image.DecompressionBombError):
             return None, None
 
+    def _catalog_entries(self, relative):
+        """Yield cheap file identity data without opening image contents.
+
+        POSIX stat calls are relative to the verified directory descriptor and
+        never follow symlinks. Windows retains per-file native handle checks
+        because its creation time is not an overwrite-sensitive change time.
+        Every image selected for a page is subsequently opened and validated.
+        """
+        if os.name == 'nt' or os.scandir not in os.supports_fd:
+            for name, _, is_file in self._entries(relative):
+                if not is_file or Path(name).suffix.lower() not in EXTENSIONS:
+                    continue
+                try:
+                    with os.fdopen(self._open_path(str(PurePosixPath(relative, name))), 'rb') as source:
+                        metadata = os.fstat(source.fileno())
+                        yield name, metadata, self._revision(metadata, source.fileno())
+                except (GalleryError, OSError, ValueError):
+                    continue
+            return
+        handle = self._open_path(relative, directory=True)
+        try:
+            with os.scandir(handle) as entries:
+                for entry in entries:
+                    if Path(entry.name).suffix.lower() not in EXTENSIONS:
+                        continue
+                    try:
+                        metadata = entry.stat(follow_symlinks=False)
+                        if stat.S_ISREG(metadata.st_mode):
+                            yield entry.name, metadata, self._revision(metadata)
+                    except OSError:
+                        continue
+        finally:
+            os.close(handle)
+
     def _scan_folder(self, folder_id):
         if folder_id not in self._folders:
             self.list_folders()
         if folder_id not in self._folders:
             raise GalleryError(404, 'folder_not_found', 'The selected folder is unavailable')
         relative = self._folders[folder_id]
-        entries = self._entries(relative)
         records = []
         old = self._indexes.get(folder_id)
         old_by_path = {row['_path']: row for row in old[1]} if old else {}
-        for name, _, is_file in entries:
-            suffix = Path(name).suffix.lower()
-            if not is_file or suffix not in EXTENSIONS:
-                continue
-            path = str(PurePosixPath(relative, name))
-            try:
-                with os.fdopen(self._open_path(path), 'rb') as source:
-                    metadata = os.fstat(source.fileno())
-                    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > self.max_file_bytes:
-                        continue
-                    revision = self._revision(metadata, source.fileno())
-                    previous = old_by_path.get(path)
-                    if previous and previous['revision'] == revision:
-                        row = previous
-                    else:
-                        width, height = self._dimensions(source, suffix)
-                        row = {'id': self._id('i_', path), 'folder_id': folder_id,
-                               'name': name, 'revision': revision, 'mtime_ns': metadata.st_mtime_ns,
-                               'width': width, 'height': height, '_path': path}
-                    # Don't publish a file that changed while reading its header.
-                    if self._revision(os.fstat(source.fileno()), source.fileno()) != revision:
-                        continue
-                    records.append(row)
-            except (GalleryError, OSError, ValueError):
-                continue
-            if len(records) > self.max_files:
-                raise GalleryError(413, 'image_limit', 'There are too many images in this folder')
+        with closing(self._catalog_entries(relative)) as entries:
+            for name, metadata, revision in entries:
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > self.max_file_bytes:
+                    continue
+                path = str(PurePosixPath(relative, name))
+                previous = old_by_path.get(path)
+                if previous and previous['revision'] == revision:
+                    row = previous
+                else:
+                    row = {'id': self._id('i_', path), 'folder_id': folder_id,
+                           'name': name, 'revision': revision, 'mtime_ns': metadata.st_mtime_ns,
+                           'width': None, 'height': None, '_path': path, '_ready': False}
+                records.append(row)
+                if len(records) > self.max_files:
+                    raise GalleryError(413, 'image_limit', 'There are too many images in this folder')
         records.sort(key=lambda row: (-row['mtime_ns'], row['_path']))
-        for row in (old[1] if old else []):
-            self._records.pop(row['id'], None)
-        self._records.update({row['id']: row for row in records})
         version = hashlib.sha256(''.join(row['id'] + row['revision'] for row in records).encode()).hexdigest()[:32]
-        self._indexes[folder_id] = (time.monotonic(), tuple(records), version)
-        self._indexes.move_to_end(folder_id)
-        while len(self._indexes) > 16:
-            _, (_, expired, _) = self._indexes.popitem(last=False)
+        # Build replacements outside the lookup lock too: a large folder must
+        # not block selected originals while N record mappings are updated.
+        replacements = self._records.copy()
+        for row in (old[1] if old else []):
+            replacements.pop(row['id'], None)
+        replacements.update({row['id']: row for row in records})
+        indexes = self._indexes.copy()
+        indexes[folder_id] = (time.monotonic(), tuple(records), version)
+        indexes.move_to_end(folder_id)
+        while len(indexes) > 16:
+            _, (_, expired, _) = indexes.popitem(last=False)
             for row in expired:
-                self._records.pop(row['id'], None)
+                replacements.pop(row['id'], None)
+        with self._lock:
+            self._records, self._indexes = replacements, indexes
         return self._indexes[folder_id]
+
+    def _prepare_row(self, row):
+        """Read dimensions/completion only for a requested page, never all N."""
+        if row.get('_ready'):
+            return True
+        try:
+            with os.fdopen(self._open_path(row['_path']), 'rb') as source:
+                metadata = os.fstat(source.fileno())
+                if not stat.S_ISREG(metadata.st_mode) or self._revision(metadata, source.fileno()) != row['revision']:
+                    return False
+                width, height = self._dimensions(source, Path(row['name']).suffix.lower())
+                self._check_unchanged(source, row['revision'])
+                row.update(width=width, height=height, _ready=True)
+                return True
+        except (GalleryError, OSError, ValueError):
+            return False
 
     def _cursor(self, snapshot_id, offset, folder_id):
         payload = json.dumps([snapshot_id, offset, folder_id], separators=(',', ':')).encode()
@@ -268,27 +314,46 @@ class GalleryStore:
     def list_images(self, folder_id, *, cursor=None, limit=100):
         if type(limit) is not int or not 1 <= limit <= 200:
             raise GalleryError(400, 'invalid_limit', 'Limit must be between 1 and 200')
-        with self._lock:
+        with self._scan_lock:
             now = time.monotonic()
             for key, snapshot in list(self._snapshots.items()):
                 if now - snapshot[0] > self.snapshot_ttl:
                     del self._snapshots[key]
             if cursor:
                 snapshot_id, offset = self._parse_cursor(cursor, folder_id)
-                _, records, version = self._snapshots[snapshot_id]
+                _, records, version, _ = self._snapshots[snapshot_id]
+                self._snapshots[snapshot_id] = (now, records, version, folder_id)
+                self._snapshots.move_to_end(snapshot_id)
             else:
                 cached = self._indexes.get(folder_id)
                 _, records, version = cached if cached and now - cached[0] < self.scan_interval else self._scan_folder(folder_id)
-                snapshot_id, offset = secrets.token_hex(12), 0
-                if len(records) > limit:
-                    self._snapshots[snapshot_id] = (now, records, version)
+                # Polling an unchanged list renews the existing snapshot, so an
+                # already-loaded continuation cursor stays usable without
+                # re-requesting every preceding page.
+                snapshot_id = next((key for key, (_, _, saved_version, saved_folder) in self._snapshots.items()
+                                    if saved_folder == folder_id and saved_version == version), None)
+                if snapshot_id is not None:
+                    _, records, _, _ = self._snapshots[snapshot_id]
+                else:
+                    # Reconstruct the same snapshot identity after expiry or
+                    # eviction when a first-page refresh confirms unchanged
+                    # data. Existing signed offsets can then be reused safely.
+                    snapshot_id = hmac.new(self._secret, f'{folder_id}:{version}'.encode(), hashlib.sha256).hexdigest()[:24]
+                offset = 0
+                if snapshot_id in self._snapshots or len(records) > limit:
+                    self._snapshots[snapshot_id] = (now, records, version, folder_id)
+                    self._snapshots.move_to_end(snapshot_id)
                     while len(self._snapshots) > self.max_snapshots:
                         self._snapshots.popitem(last=False)
-            page = records[offset:offset + limit]
-            next_offset = offset + len(page)
+            page = []
+            next_offset = offset
+            while next_offset < len(records) and len(page) < limit:
+                row = records[next_offset]
+                next_offset += 1
+                if self._prepare_row(row):
+                    page.append({key: value for key, value in row.items() if not key.startswith('_')})
             next_cursor = self._cursor(snapshot_id, next_offset, folder_id) if next_offset < len(records) else None
-            return {'images': [{key: value for key, value in row.items() if not key.startswith('_')} for row in page],
-                    'next_cursor': next_cursor, 'version': version}
+            return {'images': page, 'next_cursor': next_cursor, 'version': version}
 
     def open_original(self, image_id, revision=None):
         """Return an already confined file handle; callers must close it.
@@ -399,10 +464,11 @@ class GalleryStore:
                 return {'status': 'unsupported', 'prompt': None, 'workflow': None,
                         'raw_prompt': None, 'raw_workflow': None, 'warnings': ['Saved ComfyUI settings are supported only in PNG images']}
             with self._lock:
-                if key in self._metadata_cache:
-                    payload = self._metadata_cache.pop(key)
+                payload = self._metadata_cache.pop(key, None)
+                if payload is not None:
                     self._metadata_cache[key] = payload
-                    return json.loads(payload)
+            if payload is not None:
+                return json.loads(payload)
             text, warnings = read_png_text(source, self.max_metadata_bytes)
             result = parse_saved_metadata(text, warnings)
             self._check_unchanged(source, current)

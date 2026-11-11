@@ -60,3 +60,24 @@ The user supplied CI output where one browser case failed the all-request pathna
 The assertion incorrectly treated local `blob:` image handles (created after successful proxied thumbnail fetches) as HTTP paths. A regression test reproduced that classifier defect. The test now validates origin and proxy prefix for HTTP(S) transport, ignores non-HTTP local resource URLs, retains complete offending URLs in failure output, and repeats the check after comparison/folder navigation. Missing-prefix and cross-origin HTTP requests still fail. No production application logic changed.
 
 After the fix: 71 frontend tests, typecheck/build and production-bundle smoke pass. Browser CI rerun result is still pending/unverified from this executor.
+
+## Real-use feedback patch — 2026-11-11
+
+The user reported sufficient thumbnail transfer speed but several-second Opening output waits as image counts grow, slow single-image originals, and cumbersome reference selection. Code inspection confirmed that single and comparison views share ImagePane and the same original route; no single-mode-specific cause was proved.
+
+Implemented: Large initial view; 60-record pages; selected reference initially shown on both sides; reference chooser across pinned and checked candidates; cached 512px preview before the original; loading status below rather than over the image; higher original priority and low-priority metadata. The preview cache is bounded at 128 entries/32 MiB and cleared on close.
+
+Backend now postpones PNG header checks to the requested page, separates catalog work from original lookup locks, isolates original-image workers, and reads originals in 1 MiB chunks rather than 64 KiB. Unchanged refreshes preserve loaded pages and their cursor instead of fetching all of them again. Snapshot expiration/eviction regressions are covered.
+
+Synthetic Linux measurements (five runs each, median, generated local files; **not Paperspace/user-network measurements**):
+
+| Case | Before | After |
+| --- | ---: | ---: |
+| First 10-image page from 1,000 PNGs | 29.20 ms; 1,000 image opens/header reads | 10.63 ms; 10 image opens/header reads |
+| Unchanged catalog refresh | 26.76 ms; 1,000 image opens | 8.99 ms; 0 image opens |
+| Approx. 3.15 MB original | 16.40 ms; 50 read dispatches | 9.06 ms; 5 read dispatches |
+| Original while both general workers held for 200 ms | 216.12 ms | 4.96 ms |
+
+Directory enumeration/stat/sort remains O(N). Windows still needs secure opens to obtain native ChangeTime, so the Linux zero-open refresh count does not apply there. Native Windows and user-visible speed remain unmeasured here.
+
+Final local verification for this patch: Python 97 passed/8 Windows-only skipped; frontend 88 passed; typecheck/build/bundle smoke/Python compilation/diff checks passed. Three browser E2E cases include intentionally delayed original delivery; actual browser execution still requires CI/a supported runtime.

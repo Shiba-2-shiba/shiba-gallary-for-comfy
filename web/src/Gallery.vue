@@ -31,16 +31,17 @@ import VirtualGrid from "./VirtualGrid.vue";
 import ImagePane from "./ImagePane.vue";
 import MetadataPanel from "./MetadataPanel.vue";
 import Thumbnail from "./Thumbnail.vue";
+import { thumbnailCache } from "./thumbnailCache";
 const props = defineProps<{ api: GalleryApi }>();
 const s = reactive(createSession());
 const folders = ref<Folder[]>([]);
-const large = ref(false);
+const large = ref(true);
 const dialog = ref<HTMLDialogElement>();
 const leftPane = ref<InstanceType<typeof ImagePane>>();
 const rightPane = ref<InstanceType<typeof ImagePane>>();
 const launcher = ref<HTMLButtonElement>();
 const grid = ref<InstanceType<typeof VirtualGrid>>();
-const gridPosition = ref({ scroll: 0, width: 1000, cell: 164 });
+const gridPosition = ref({ scroll: 0, width: 1000, cell: 284 });
 const candidateRow = ref<HTMLElement>();
 const tick = ref(0);
 const c = new GalleryController(props.api, s, () => tick.value++);
@@ -85,6 +86,13 @@ const leftModels = computed(() =>
 const rightModels = computed(() =>
   rightMeta.value ? getModelNames(rightMeta.value) : [],
 );
+const references = computed(() => {
+  const ids = new Set([...s.pinned, ...s.checked]);
+  if (s.leftId) ids.add(s.leftId);
+  return [...ids]
+    .map((id) => s.records.get(id))
+    .filter((image): image is ImageRecord => !!image);
+});
 const choices = computed(() =>
   s.mode === "single" ? s.images : candidates(s),
 );
@@ -195,6 +203,7 @@ watch(
     void metadata(right.value);
     s.manualMatches = {};
   },
+  { flush: "post" },
 );
 async function open() {
   if (s.open) return;
@@ -238,6 +247,7 @@ function close() {
   clearInterval(interval);
   pending.clear();
   meta.clear();
+  thumbnailCache.clear();
   dialog.value?.close();
   closeSession(s);
   helper.value = "";
@@ -273,10 +283,11 @@ watch(() => [left.value?.id, left.value?.revision], cancelSearch, {
 });
 function pin(id: string) {
   cancelSearch();
+  s.pinned.add(id);
   s.leftId = id;
   s.mode = "compare";
   s.scope = s.checked.size > 1 ? "checked" : "folder";
-  s.rightId = candidates(s)[0]?.id ?? null;
+  s.rightId = id;
   s.manualMatches = {};
   s.panel = false;
   helper.value = "";
@@ -395,6 +406,7 @@ onMounted(() => {
   document.addEventListener("visibilitychange", eventRefresh);
 });
 onBeforeUnmount(() => {
+  thumbnailCache.clear();
   clearInterval(interval);
   folderAbort.abort();
   metadataAbort.abort();
@@ -487,6 +499,7 @@ onBeforeUnmount(() => {
         ref="grid"
         :images="s.images"
         :checked="s.checked"
+        :pinned="s.pinned"
         :large="large"
         :api="api"
         :has-more="hasMore"
@@ -521,7 +534,22 @@ onBeforeUnmount(() => {
     <template v-else>
       <div class="sg-toolbar sg-view-toolbar">
         <template v-if="s.mode === 'compare'"
-          ><span class="sg-reference-label">LEFT PINNED</span
+          ><label class="sg-reference-select"
+            >Reference
+            <select
+              aria-label="Reference image"
+              :value="s.leftId"
+              @change="pin(($event.target as HTMLSelectElement).value)"
+            >
+              <option
+                v-for="image in references"
+                :key="image.id"
+                :value="image.id"
+              >
+                {{ image.name
+                }}{{ s.pinned.has(image.id) ? " · pinned" : " · checked" }}
+              </option>
+            </select> </label
           ><label
             >Candidates
             <select

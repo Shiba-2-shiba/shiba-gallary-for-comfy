@@ -2,6 +2,7 @@
 import { computed, onMounted, onBeforeUnmount, ref, watch } from "vue";
 import type { GalleryApi } from "./api";
 import type { ImageRecord, Transform } from "./state";
+import Thumbnail from "./Thumbnail.vue";
 const props = defineProps<{
   image: ImageRecord | undefined;
   api: GalleryApi;
@@ -19,6 +20,7 @@ const height = ref(600);
 const natural = ref({ width: 0, height: 0 });
 const loaded = ref(false);
 const failed = ref(false);
+const previewReady = ref(false);
 let observer: ResizeObserver;
 let drag: { x: number; y: number; start: Transform } | null = null;
 const fit = computed(() =>
@@ -43,14 +45,29 @@ watch(
   () => {
     loaded.value = false;
     failed.value = false;
+    previewReady.value = false;
     natural.value = { width: 0, height: 0 };
   },
 );
-function imageLoaded(event: Event) {
+async function imageLoaded(event: Event) {
   if (event.target !== currentImage.value) return;
   const image = event.target as HTMLImageElement;
+  if (image.decode) {
+    try {
+      await image.decode();
+    } catch {
+      if (image === currentImage.value) failed.value = true;
+      return;
+    }
+  }
+  if (image !== currentImage.value) return;
   natural.value = { width: image.naturalWidth, height: image.naturalHeight };
   loaded.value = true;
+}
+function previewLoaded(size: { width: number; height: number }) {
+  if (loaded.value) return;
+  previewReady.value = true;
+  if (!props.image?.width && size.width && size.height) natural.value = size;
 }
 function imageFailed(event: Event) {
   if (event.target === currentImage.value) failed.value = true;
@@ -108,6 +125,7 @@ onBeforeUnmount(() => observer?.disconnect());
       ><span>{{ image?.name ?? "No candidate" }}</span
       ><button
         :aria-label="'Show ' + side + ' original pixels'"
+        :disabled="!loaded"
         @click="emit('original')"
       >
         1:1
@@ -128,35 +146,59 @@ onBeforeUnmount(() => observer?.disconnect());
       @lostpointercapture="drag = null"
       @dblclick="emit('transform', { scale: 1, x: 0, y: 0 })"
     >
+      <div
+        v-if="image && !loaded"
+        :key="image.id + image.revision + 'preview'"
+        class="sg-image-preview"
+        :style="style"
+      >
+        <Thumbnail
+          :url="api.imageURL(image, 'thumbnail', 512)"
+          :cached-fallback-url="api.imageURL(image, 'thumbnail', 256)"
+          :alt="image.name + ' · preview'"
+          quiet
+          @ready="previewLoaded"
+        />
+      </div>
       <img
+        class="sg-original"
         ref="currentImage"
         v-if="image && !failed"
         :key="image.id + image.revision"
         :src="api.imageURL(image, 'original')"
         :alt="image.name"
-        :style="style"
+        :style="{ ...style, opacity: loaded ? 1 : 0 }"
+        fetchpriority="high"
+        loading="eager"
         draggable="false"
         decoding="async"
         @load="imageLoaded"
         @error="imageFailed"
       />
-      <p v-if="!image || failed" class="sg-surface-status">
+      <p v-if="!image" class="sg-surface-status">
         {{
           failed
             ? "Image unavailable. It may have been moved or overwritten."
             : "No comparison candidate. Select more images or change the candidate range."
         }}
       </p>
-      <p v-else-if="!loaded" class="sg-surface-status">Loading original…</p>
     </div>
     <div class="sg-models" :title="models.join(', ')">
       <span>{{
         models.length ? "Model: " + models.join(" · ") : modelStatus
       }}</span
-      ><span
-        >{{ Math.round(transform.scale * 100) }}% of fit
-        {{ loaded ? "· Original" : "" }}</span
+      ><span class="sg-zoom-status"
+        >{{ Math.round(transform.scale * 100) }}% of fit</span
       >
+      <span class="sg-quality-status" role="status">{{
+        loaded
+          ? "Original"
+          : failed
+            ? "Original unavailable"
+            : previewReady
+              ? "Preview · Loading original…"
+              : "Loading original…"
+      }}</span>
     </div>
   </section>
 </template>

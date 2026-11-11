@@ -35,14 +35,14 @@ describe("gallery session", () => {
     expect([...s.checked]).toEqual(["a"]);
     expect(s.records.get("a")?.name).toBe("a.png");
   });
-  it("checks candidate navigation excludes reference and does not wrap", () => {
+  it("candidate navigation includes the reference and does not wrap", () => {
     const s = createSession();
     s.images = [img("a"), img("b"), img("c")];
     s.leftId = "a";
     s.rightId = "b";
     s.scope = "checked";
     s.checked = new Set(["a", "b", "c"]);
-    expect(candidates(s).map((x) => x.id)).toEqual(["b", "c"]);
+    expect(candidates(s).map((x) => x.id)).toEqual(["a", "b", "c"]);
     stepCandidate(s, 1);
     expect(s.rightId).toBe("c");
     stepCandidate(s, 1);
@@ -118,4 +118,27 @@ it("reveals the selected horizontal candidate without changing unrelated scroll 
   expect(revealHorizontal(300, 0, 455, 58)).toBe(213);
   expect(revealHorizontal(300, 300, 100, 58)).toBe(100);
   expect(revealHorizontal(300, 50, 100, 58)).toBe(50);
+});
+
+it("keeps the current reference available outside the checked range", () => {
+  const s = createSession();
+  s.images = [img("a"), img("b"), img("c")];
+  s.leftId = "b";
+  s.rightId = "b";
+  s.scope = "checked";
+  s.checked.add("c");
+  expect(candidates(s).map((i) => i.id)).toEqual(["b", "c"]);
+  stepCandidate(s, 1);
+  expect(s.rightId).toBe("c");
+  stepCandidate(s, -1);
+  expect(s.rightId).toBe("b");
+});
+it("keeps pinned references through refresh and resets them on close", () => {
+  const s = createSession();
+  reconcileImages(s, [img("a"), img("b")]);
+  s.pinned.add("b");
+  reconcileImages(s, [img("a")], true);
+  expect(s.records.get("b")?.id).toBe("b");
+  closeSession(s);
+  expect(s.pinned.size).toBe(0);
 });

@@ -34,10 +34,15 @@ export function comfyScriptURL(
 }
 export class GalleryApi {
   constructor(readonly comfy: ComfyApi) {}
-  private async get<T>(path: string, signal?: AbortSignal): Promise<T> {
+  private async get<T>(
+    path: string,
+    signal?: AbortSignal,
+    priority: RequestPriority = "auto",
+  ): Promise<T> {
     const response = await fetch(this.comfy.apiURL("/shiba-gallery" + path), {
       signal,
       credentials: "same-origin",
+      priority,
     });
     if (!response.ok) {
       let message = "Request failed (" + response.status + ")";
@@ -56,7 +61,7 @@ export class GalleryApi {
     return this.get<{ folders: Folder[] }>("/folders", signal);
   }
   images(folderId: string, cursor: string | null = null, signal?: AbortSignal) {
-    const query = new URLSearchParams({ folder_id: folderId, limit: "160" });
+    const query = new URLSearchParams({ folder_id: folderId, limit: "60" });
     if (cursor) query.set("cursor", cursor);
     return this.get<ImagePage>("/images?" + query, signal);
   }
@@ -67,6 +72,7 @@ export class GalleryApi {
         "/metadata?" +
         new URLSearchParams({ revision: image.revision }),
       signal,
+      "low",
     );
   }
   imageURL(

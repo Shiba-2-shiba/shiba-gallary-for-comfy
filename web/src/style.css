@@ -710,3 +710,33 @@
 .sg-candidates {
   position: relative;
 }
+.sg-image-preview {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform-origin: center;
+  pointer-events: none;
+}
+.sg-image-preview > img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.sg-reference-select select {
+  max-width: 230px;
+}
+.sg-dialog .sg-pin.sg-pinned {
+  color: var(--sg-accent);
+  font-weight: 700;
+}
+.sg-models .sg-quality-status {
+  display: inline !important;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+@media (max-width: 900px) {
+  .sg-models .sg-zoom-status {
+    display: none;
+  }
+}

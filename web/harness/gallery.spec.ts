@@ -33,7 +33,7 @@ test("production extension loads through proxy, virtualizes grid and preserves c
   );
   await expect(page.locator("[data-side=right]")).toHaveAttribute(
     "data-image",
-    "out-1",
+    "out-0",
   );
   await page.getByRole("button", { name: "Next image", exact: true }).click();
   await expect(page.locator("[data-side=left]")).toHaveAttribute(
@@ -42,7 +42,7 @@ test("production extension loads through proxy, virtualizes grid and preserves c
   );
   await expect(page.locator("[data-side=right]")).toHaveAttribute(
     "data-image",
-    "out-2",
+    "out-1",
   );
   await page.getByRole("button", { name: "Differences", exact: true }).click();
   await expect(
@@ -50,6 +50,17 @@ test("production extension loads through proxy, virtualizes grid and preserves c
   ).toBeVisible();
   await expect(page.locator(".sg-difference").first()).toBeVisible();
   await page.screenshot({ path: "harness/comparison.png" });
+  await page
+    .getByLabel("Reference image", { exact: true })
+    .selectOption("out-2");
+  await expect(page.locator("[data-side=left]")).toHaveAttribute(
+    "data-image",
+    "out-2",
+  );
+  await expect(page.locator("[data-side=right]")).toHaveAttribute(
+    "data-image",
+    "out-2",
+  );
   await page
     .getByRole("button", { name: "Close Gallery", exact: true })
     .click();
@@ -74,22 +85,23 @@ test("linked pan zoom and original pixel display preserve left/right placement",
   await page
     .getByLabel("Pin shiba_00000.png as reference", { exact: true })
     .click();
-  await expect(page.locator("[data-side=left] img")).toBeVisible();
-  await expect(page.locator("[data-side=right] img")).toBeVisible();
+  await page.getByRole("button", { name: "Next image", exact: true }).click();
+  await expect(page.locator("[data-side=left] .sg-original")).toBeVisible();
+  await expect(page.locator("[data-side=right] .sg-original")).toBeVisible();
   await page
     .getByRole("button", { name: "Show left original pixels", exact: true })
     .click();
   await expect
     .poll(() =>
       page
-        .locator("[data-side=left] .sg-image-surface img")
+        .locator("[data-side=left] .sg-original")
         .evaluate((el) => Math.round(el.getBoundingClientRect().width)),
     )
     .toBe(768);
   await expect
     .poll(() =>
       page
-        .locator("[data-side=right] .sg-image-surface img")
+        .locator("[data-side=right] .sg-original")
         .evaluate((el) => Math.round(el.getBoundingClientRect().width)),
     )
     .toBe(1024);
@@ -113,4 +125,33 @@ test("linked pan zoom and original pixel display preserve left/right placement",
   await expect(page.locator("[data-side=right] .sg-models")).toContainText(
     "246%",
   );
+});
+test("single view immediately reuses the grid preview while its original is still loading", async ({
+  page,
+}) => {
+  await page.goto("/proxy/8188/");
+  await page.getByRole("button", { name: "Open Gallery", exact: true }).click();
+  await expect(page.locator(".sg-thumb-button img").first()).toBeVisible();
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/original?**", async (route) => {
+    await pending;
+    await route.continue();
+  });
+  try {
+    await page
+      .getByRole("button", { name: "View shiba_00000.png", exact: true })
+      .click();
+    await expect(page.locator(".sg-image-preview img")).toBeVisible();
+    await expect(page.locator(".sg-quality-status")).toContainText(
+      "Loading original",
+    );
+    await expect(page.locator(".sg-image-surface")).not.toContainText(
+      "Loading original",
+    );
+  } finally {
+    release();
+  }
+  await expect(page.locator(".sg-quality-status")).toHaveText("Original");
+  await expect(page.locator(".sg-image-preview")).toHaveCount(0);
 });
