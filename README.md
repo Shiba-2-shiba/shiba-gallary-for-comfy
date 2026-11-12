@@ -50,5 +50,5 @@ CIではPython 3.14のLinux／Windowsテスト、frontendの状態・コンポ�
 
 [PanicTitan/ComfyUI-Gallery](https://github.com/PanicTitan/ComfyUI-Gallery) と作者 PanicTitan 氏に感謝します。画像一覧・比較の利用体験および拡張構成を参考に、新規リポジトリとして実装しています。元リポジトリは MIT License、Copyright (c) 2025 PanicTitan です。
 
-元のMIT全文を [licenses/PanicTitan-ComfyUI-Gallery-MIT.txt](licenses/PanicTitan-ComfyUI-Gallery-MIT.txt) に収録しています。流用範囲と依存物については [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) を参照してください。新規作成部分のライセンスはオーナーによる選定待ちです。
+元のMIT全文を [licenses/PanicTitan-ComfyUI-Gallery-MIT.txt](licenses/PanicTitan-ComfyUI-Gallery-MIT.txt) に収録しています。流用範囲と依存物については [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) を参照してください。新規作成部分は [MIT License](LICENSE) で公開しています。著作権表示は Copyright (c) 2026 Shiba-2-shiba です。参考元および依存ライブラリの著作権・ライセンス通知はそれぞれ保持します。
 
