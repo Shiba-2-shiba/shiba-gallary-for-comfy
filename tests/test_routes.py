@@ -24,13 +24,13 @@ def test_http_contract_cache_headers_and_read_only_methods(tmp_path):
             assert set(row) == {'id', 'folder_id', 'name', 'revision', 'mtime_ns', 'width', 'height'}
             assert response.headers['Cache-Control'] == 'no-store'
             base = f"/shiba-gallery/image/{row['id']}"
-            thumbnail = await client.get(base + '/thumbnail', params={'size': 256, 'revision': row['revision']})
+            thumbnail = await client.get(base + '/thumbnail', params={'size': 256, 'revision': row['revision'], 'render': '2'})
             assert thumbnail.status == 200
             assert thumbnail.headers['Content-Type'] == 'image/webp'
             assert 'immutable' in thumbnail.headers['Cache-Control']
             with Image.open(io.BytesIO(await thumbnail.read())) as image:
                 assert image.size == (256, 128)
-            cached = await client.get(base + '/thumbnail', params={'size': 256, 'revision': row['revision']},
+            cached = await client.get(base + '/thumbnail', params={'size': 256, 'revision': row['revision'], 'render': '2'},
                                       headers={'If-None-Match': thumbnail.headers['ETag']})
             assert cached.status == 304 and await cached.read() == b''
             original = await client.get(base + '/original', params={'revision': row['revision']})

@@ -1,13 +1,16 @@
 """Read-only bootstrap, display derivative and source-download contracts."""
 import asyncio
+import hashlib
 import io
 import os
+import struct
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from PIL import Image, ImageCms, PngImagePlugin
 
-from gallery_backend.routes import create_app
+from gallery_backend.routes import create_app, register_routes
 from gallery_backend.store import GalleryError, GalleryStore
 
 
@@ -65,6 +68,104 @@ def test_display_is_high_quality_webp_without_upscaling_or_source_modification(t
         assert error.value.status == 409
 
 
+@pytest.mark.parametrize('size,kind,params', [
+    (256, 'thumbnail', {'size': '256'}),
+    (512, 'thumbnail', {'size': '512'}),
+    (1024, 'display', {}),
+])
+@pytest.mark.parametrize('samples,tones', [
+    ((0, 16384, 32768, 49152, 65535), (0, 64, 128, 191, 255)),
+    ((0, 8192, 16384, 24576, 32768), (0, 32, 64, 96, 128)),
+])
+def test_gray16_webp_delivery_scales_absolute_tones_without_changing_source(tmp_path, size, kind, params, samples, tones):
+    path = tmp_path / 'gray16.png'
+    columns = [samples[min(x // 204, 4)] for x in range(1024)]
+    image = Image.frombytes('I;16', (1024, 1024), struct.pack('<1024H', *columns) * 1024)
+    saved = PngImagePlugin.PngInfo()
+    saved.add_text('prompt', '{"1":{"class_type":"Source","inputs":{"value":65535}}}')
+    image.save(path, pnginfo=saved)
+    original = path.read_bytes()
+    assert original[24:26] == b'\x10\x00'  # PNG IHDR: 16-bit grayscale
+
+    async def exercise():
+        async with TestClient(TestServer(create_app(tmp_path))) as client:
+            row = (await (await client.get('/shiba-gallery/bootstrap')).json())['page']['images'][0]
+            base = '/shiba-gallery/image/' + row['id']
+            revision = {'revision': row['revision']}
+            response = await client.get(base + '/' + kind, params={**revision, **params, 'render': '2'})
+            assert response.status == 200, await response.text() if response.status != 200 else ''
+            assert response.headers['Content-Type'] == 'image/webp'
+            with Image.open(io.BytesIO(await response.read())) as result:
+                assert result.size == (size, size)
+                assert result.mode == 'RGB'
+                for index, tone in enumerate(tones):
+                    rgb = result.getpixel(((2 * index + 1) * size // 10, size // 2))
+                    assert rgb == pytest.approx((tone,) * 3, abs=4)
+            for endpoint in ('original', 'download'):
+                source = await client.get(base + '/' + endpoint, params=revision)
+                assert source.status == 200 and source.headers['Content-Type'] == 'image/png'
+                assert 'immutable' in source.headers['Cache-Control']
+                assert source.headers['ETag'] == '"' + row['revision'] + '"'
+                assert await source.read() == original
+            metadata = await (await client.get(base + '/metadata', params=revision)).json()
+            assert metadata['prompt']['1']['inputs']['value'] == 65535
+    asyncio.run(exercise())
+    assert path.read_bytes() == original
+
+
+def test_gray16_webp_retains_exact_transparency_key_before_quantization(tmp_path):
+    left, right = 32768, 32769  # Same 8-bit level, different source transparency.
+    row_pixels = struct.pack('<128H', *([left] * 64 + [right] * 64))
+    image = Image.frombytes('I;16', (128, 48), row_pixels * 48)
+    image.save(tmp_path / 'gray16-transparent.png', transparency=left)
+    with GalleryStore(tmp_path) as store:
+        row = store.bootstrap()['page']['images'][0]
+        for variant, _ in (store.thumbnail(row['id']), store.display(row['id'])):
+            with Image.open(io.BytesIO(variant)) as result:
+                assert result.mode == 'RGBA'
+                assert result.getpixel((32, 24))[3] == 0
+                assert result.getpixel((96, 24)) == pytest.approx((128, 128, 128, 255), abs=4)
+
+
+@pytest.mark.parametrize('kind,params,old_key,old_tag', [
+    ('thumbnail', {'size': '256'}, '256:webp-v1', '-thumbnail-256'),
+    ('display', {}, '1024:webp-display-q95-icc-v1', '-display-1024-q95-icc-v1'),
+])
+def test_derivative_upgrade_bypasses_old_disk_cache_and_etag(tmp_path, kind, params, old_key, old_tag):
+    save_png(tmp_path / 'a.png')
+    app = web.Application()
+    routes = web.RouteTableDef()
+    api = register_routes(routes, tmp_path)
+    app.add_routes(routes)
+    app.on_cleanup.append(api.close)
+    store = api.store
+
+    async def exercise():
+        async with TestClient(TestServer(app)) as client:
+            row = (await (await client.get('/shiba-gallery/bootstrap')).json())['page']['images'][0]
+            url = '/shiba-gallery/image/' + row['id'] + '/' + kind
+            old_cache_name = hashlib.sha256(f"{row['id']}:{row['revision']}:{old_key}".encode()).hexdigest() + '.webp'
+            store._write_thumbnail(old_cache_name, b'old clipped preview')
+            current_params = {**params, 'revision': row['revision']}
+            for token in ({}, {'render': '1'}, {'render': '3'}):
+                legacy = await client.get(url, params={**current_params, **token})
+                assert legacy.status == 200 and legacy.headers['Cache-Control'] == 'no-cache'
+                assert await legacy.read() != b'old clipped preview'
+            versioned = {**current_params, 'render': '2'}
+            fresh = await client.get(url, params=versioned, headers={'If-None-Match': f'"{row["revision"]}{old_tag}"'})
+            assert fresh.status == 200 and 'immutable' in fresh.headers['Cache-Control']
+            data = await fresh.read()
+            with Image.open(io.BytesIO(data)) as result:
+                assert result.format == 'WEBP'
+            warm = await client.get(url, params=versioned)
+            assert await warm.read() == data
+            conditional = await client.get(url, params=versioned, headers={'If-None-Match': fresh.headers['ETag']})
+            assert conditional.status == 304 and await conditional.read() == b''
+            no_revision = await client.get(url, params={**params, 'render': '2'})
+            assert no_revision.headers['Cache-Control'] == 'no-cache'
+    asyncio.run(exercise())
+
+
 def test_display_preserves_alpha_profile_and_applies_orientation(tmp_path):
     profile = ImageCms.ImageCmsProfile(ImageCms.createProfile('sRGB')).tobytes()
     exif = Image.Exif()
@@ -117,11 +218,11 @@ def test_delivery_http_bootstrap_display_download_and_revision(tmp_path):
             body = await initial.json()
             row = body['page']['images'][0]
             base = '/shiba-gallery/image/' + row['id']
-            display = await client.get(base + '/display', params={'revision': row['revision']})
+            display = await client.get(base + '/display', params={'revision': row['revision'], 'render': '2'})
             assert display.status == 200 and display.headers['Content-Type'] == 'image/webp'
             assert 'immutable' in display.headers['Cache-Control']
             assert display.headers['ETag'] != '"' + row['revision'] + '"'
-            cached = await client.get(base + '/display', params={'revision': row['revision']},
+            cached = await client.get(base + '/display', params={'revision': row['revision'], 'render': '2'},
                                       headers={'If-None-Match': display.headers['ETag']})
             assert cached.status == 304
             download = await client.get(base + '/download', params={'revision': row['revision']})

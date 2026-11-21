@@ -17,7 +17,7 @@ describe("ComfyUI routing", () => {
       apiURL: (route: string) => "/prefix" + route,
     });
     expect(api.imageURL({ id: "a/b", revision: "v&1" }, "thumbnail", 256)).toBe(
-      "/prefix/shiba-gallery/image/a%2Fb/thumbnail?revision=v%261&size=256",
+      "/prefix/shiba-gallery/image/a%2Fb/thumbnail?revision=v%261&size=256&render=2",
     );
   });
 });
@@ -71,7 +71,9 @@ it('bootstraps a selected folder through the proxy and exposes separate display 
     expect(url.pathname).toBe('/prefix/shiba-gallery/bootstrap');
     expect(url.searchParams.get('folder_id')).toBe('folder&one');
     expect(url.searchParams.get('limit')).toBe('60');
-    expect(api.imageURL({ id:'one',revision:'1' }, 'display')).toContain('/display?');
-    expect(api.imageURL({ id:'one',revision:'1' }, 'download')).toContain('/download?');
+    expect(api.imageURL({ id:'one',revision:'1' }, 'display')).toBe('/prefix/shiba-gallery/image/one/display?revision=1&render=2');
+    for (const kind of ['original', 'download'] as const) {
+      expect(api.imageURL({ id:'one',revision:'1' }, kind)).toBe(`/prefix/shiba-gallery/image/one/${kind}?revision=1`);
+    }
   } finally { globalThis.fetch = previous; }
 });

@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from aiohttp import web
 from urllib.parse import quote
 
-from .store import GalleryError, GalleryStore
+from .store import DERIVATIVE_RENDER, GalleryError, GalleryStore
 
 PREFIX = '/shiba-gallery'
 
@@ -129,6 +129,12 @@ class GalleryAPI:
                 'Cache-Control': 'private, max-age=31536000, immutable' if requested else 'no-cache',
                 'X-Content-Type-Options': 'nosniff'}
 
+    def _derivative_headers(self, request, revision, requested, *, variant):
+        # Never give a legacy/unrecognized URL immutable lifetime: a future
+        # rendering recipe may change its body with the same source revision.
+        versioned = requested if request.query.get('render') == DERIVATIVE_RENDER else None
+        return self._image_headers(revision, versioned, variant=f'-{variant}-v{DERIVATIVE_RENDER}')
+
     @staticmethod
     def _not_modified(request, headers):
         candidates = [value.strip() for value in request.headers.get('If-None-Match', '').split(',')]
@@ -165,7 +171,7 @@ class GalleryAPI:
             size = self._integer(request, 'size', 256)
             revision = request.query.get('revision')
             data, current = await self.run(self.store.thumbnail, request.match_info['image_id'], size, revision)
-            headers = self._image_headers(current, revision, variant=f'-thumbnail-{size}')
+            headers = self._derivative_headers(request, current, revision, variant=f'thumbnail-{size}')
             if self._not_modified(request, headers):
                 return web.Response(status=304, headers=headers)
             return web.Response(body=data, content_type='image/webp', headers=headers)
@@ -176,7 +182,7 @@ class GalleryAPI:
         try:
             revision = request.query.get('revision')
             data, current = await self.run(self.store.display, request.match_info['image_id'], revision)
-            headers = self._image_headers(current, revision, variant='-display-1024-q95-icc-v1')
+            headers = self._derivative_headers(request, current, revision, variant='display-1024-q95-icc')
             if self._not_modified(request, headers):
                 return web.Response(status=304, headers=headers)
             return web.Response(body=data, content_type='image/webp', headers=headers)

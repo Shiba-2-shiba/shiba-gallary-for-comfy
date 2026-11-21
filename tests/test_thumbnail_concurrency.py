@@ -1,6 +1,5 @@
 """Bounded concurrent thumbnail generation and private-cache regressions."""
 from concurrent.futures import ThreadPoolExecutor
-import hashlib
 import io
 from pathlib import Path
 import threading
@@ -104,11 +103,11 @@ def test_cache_budget_and_lru_hits_survive_eviction(tmp_path):
         folder = store.list_folders()['folders'][0]['id']
         rows = store.list_images(folder)['images']
         a = store.thumbnail(rows[0]['id'], 256)[0]
+        key = next(store.cache_dir.glob('*.webp')).name
         store.thumbnail(rows[1]['id'], 256)
         store.thumbnail(rows[0]['id'], 256)  # Make A most recently used.
         store.thumbnail(rows[2]['id'], 256)
         keys = {path.name for path in store.cache_dir.glob('*.webp')}
-        key = hashlib.sha256(f"{rows[0]['id']}:{rows[0]['revision']}:256:webp-v1".encode()).hexdigest() + '.webp'
         assert key in keys
         assert sum(path.stat().st_size for path in store.cache_dir.iterdir()) <= store.cache_bytes
         assert store.thumbnail(rows[0]['id'], 256)[0] == a

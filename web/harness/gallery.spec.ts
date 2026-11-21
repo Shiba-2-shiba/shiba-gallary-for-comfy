@@ -291,3 +291,25 @@ test('normal display avoids originals and fast navigation only fetches the settl
   expect(urls.filter(url=>url.includes('/out-6/display?'))).toHaveLength(1);
   await expect(page.getByRole('link',{name:'Download right original image'})).toHaveAttribute('href', /\/out-6\/download\?/);
 });
+
+test('production bundle versions WebP requests without changing source URLs', async ({ page }) => {
+  await page.goto('/proxy/8188/');
+  const imageBase = '/proxy/8188/shiba-gallery/image/out-0/';
+  const thumbRequest = page.waitForRequest(request => new URL(request.url()).pathname === imageBase + 'thumbnail');
+  await page.getByRole('button', { name: 'Open Gallery', exact: true }).click();
+  const thumbnail = new URL((await thumbRequest).url());
+  expect(thumbnail.searchParams.get('render')).toBe('2');
+  expect(thumbnail.searchParams.get('revision')).toBe('v1');
+
+  const displayRequest = page.waitForRequest(request => new URL(request.url()).pathname === imageBase + 'display');
+  await page.getByRole('button', { name: 'View shiba_00000.png', exact: true }).click();
+  const display = new URL((await displayRequest).url());
+  expect(display.searchParams.get('render')).toBe('2');
+  expect(display.searchParams.get('revision')).toBe('v1');
+
+  await expect(page.getByRole('link', { name: 'Download right original image' }))
+    .toHaveAttribute('href', imageBase + 'download?revision=v1');
+  const originalRequest = page.waitForRequest(request => new URL(request.url()).pathname === imageBase + 'original');
+  await page.getByRole('button', { name: 'Show right original pixels', exact: true }).click();
+  expect(new URL((await originalRequest).url()).search).toBe('?revision=v1');
+});

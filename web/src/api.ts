@@ -1,4 +1,6 @@
 import type { ImageRecord } from "./state";
+// Keep in sync with DERIVATIVE_RENDER in gallery_backend/store.py.
+const DERIVATIVE_RENDER = "2";
 export interface Folder {
   id: string;
   name: string;
@@ -87,6 +89,7 @@ export class GalleryApi {
   ) {
     const query = new URLSearchParams({ revision: image.revision });
     if (size) query.set("size", String(size));
+    if (kind === "thumbnail" || kind === "display") query.set("render", DERIVATIVE_RENDER);
     return this.comfy.apiURL(
       "/shiba-gallery/image/" +
         encodeURIComponent(image.id) +

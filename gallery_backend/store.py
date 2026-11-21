@@ -26,6 +26,8 @@ PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
 PNG_END = b'\x00\x00\x00\x00IEND\xaeB`\x82'
 EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp'}
 MIME_TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp'}
+# Keep in sync with DERIVATIVE_RENDER in web/src/api.ts when changing the WebP recipe.
+DERIVATIVE_RENDER = '2'
 
 
 class GalleryError(Exception):
@@ -499,7 +501,7 @@ class GalleryStore:
             raise GalleryError(400, 'invalid_size', 'Thumbnail size must be 256 or 512')
         source, current, mime, _ = self.open_original(image_id, revision)
         with source:
-            key = hashlib.sha256(f'{image_id}:{current}:{size}:webp-v1'.encode()).hexdigest() + '.webp'
+            key = hashlib.sha256(f'{image_id}:{current}:{size}:webp-v{DERIVATIVE_RENDER}'.encode()).hexdigest() + '.webp'
             data = self._read_thumbnail(key)
             if data is not None:
                 self._check_unchanged(source, current)
@@ -523,7 +525,7 @@ class GalleryStore:
         """
         source, current, mime, _ = self.open_original(image_id, revision)
         with source:
-            key = hashlib.sha256(f'{image_id}:{current}:1024:webp-display-q95-icc-v1'.encode()).hexdigest() + '.webp'
+            key = hashlib.sha256(f'{image_id}:{current}:1024:webp-display-q95-icc-v{DERIVATIVE_RENDER}'.encode()).hexdigest() + '.webp'
             data = self._read_thumbnail(key)
             if data is not None:
                 self._check_unchanged(source, current)
@@ -573,6 +575,24 @@ class GalleryStore:
                         raise GalleryError(422, 'unsupported_color_profile',
                                            'This color profile requires the original image; use Original or Download')
                 image = ImageOps.exif_transpose(image)
+                if mime == 'image/png' and image.mode in ('I', 'I;16', 'I;16L', 'I;16B', 'I;16N'):
+                    # Convert PNG's unsigned 16-bit gray samples on a fixed
+                    # 0–65535 scale. Direct RGB conversion clips above 255
+                    # and Pillow's thumbnail reducer rejects integer mode.
+                    gray = image if image.mode in ('I', 'I;16') else image.convert('I')
+                    gray = gray.point(lambda sample: sample * (1 / 257) + 0.5).convert('L')
+                    gray.info.pop('transparency', None)
+                    transparent = image.info.get('transparency')
+                    if isinstance(transparent, int):
+                        from PIL import ImageMath
+                        # Decide transparency using the source sample, since
+                        # different 16-bit values can map to the same gray.
+                        alpha = ImageMath.lambda_eval(
+                            lambda args: (args['samples'] != transparent) * 255,
+                            samples=image.convert('I'),
+                        ).convert('L')
+                        gray.putalpha(alpha)
+                    image = gray
                 image.thumbnail((size, size), Image.Resampling.LANCZOS)
                 if image.mode not in ('RGB', 'RGBA'):
                     image = image.convert('RGBA' if 'A' in image.getbands() or 'transparency' in image.info else 'RGB')
